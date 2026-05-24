@@ -934,7 +934,7 @@ function LoginScreen({ mode, setMode, onLoggedIn }: any) {
   const handleForgotPassword = async () => {
     const errors: Record<string, string> = {};
     if (!isTestAccount(forgotEmail)) errors.email = '請使用 @test.com';
-    if (!/^09\d{8}$/.test(forgotPhone.replace(/[\s-]/g, ''))) errors.phone = '請輸入綁定手機號碼';
+    if (!/^09\d{8}$/.test(forgotPhone.replace(/[\s-]/g, ''))) errors.phone = '請用09開頭，輸入正確手機號碼，共10位';
     if (!isStrongPassword(forgotPassword)) errors.password = '至少8位（包含英文、數字、大寫、小寫）';
     if (forgotPassword !== forgotConfirm) errors.confirm = '兩次輸入的密碼不一致';
     setForgotErrors(errors);
@@ -2443,21 +2443,141 @@ function ProfileScreen({ navigation }: any) {
   );
 }
 
+function PhoneBindingModal({ visible, value, onClose, onSave, saving }: any) {
+  const [draft, setDraft] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (visible) {
+      setDraft(value || '');
+      setError('');
+    }
+  }, [visible, value]);
+
+  const confirm = () => {
+    const phone = draft.replace(/\D/g, '');
+    if (!/^09\d{8}$/.test(phone)) {
+      setError('請用09開頭，輸入正確手機號碼，共10位');
+      return;
+    }
+    onSave(phone);
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={s.personalModalOverlay}>
+        <View style={s.personalModalCard}>
+          <Text style={s.personalModalTitle}>綁定手機</Text>
+          <Text style={s.personalInputLabel}>請輸入手機號碼</Text>
+          <TextInput
+            style={s.personalInput}
+            value={draft}
+            onChangeText={v => { setDraft(v.replace(/\D/g, '').slice(0, 10)); setError(''); }}
+            keyboardType="number-pad"
+            placeholder="0912345678"
+            placeholderTextColor={C.muted}
+            maxLength={10}
+          />
+          {!!error && <Text style={s.fieldErrorWide}>＊{error}</Text>}
+          <View style={s.personalModalActions}>
+            <TouchableOpacity style={s.settingEditorCancel} onPress={onClose}><Text style={s.settingEditorCancelText}>取消</Text></TouchableOpacity>
+            <TouchableOpacity style={s.settingEditorSave} onPress={confirm} disabled={saving}>
+              {saving ? <ActivityIndicator color="#fff" /> : <Text style={s.settingEditorSaveText}>儲存</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function BirthdayPickerModal({ visible, value, onClose, onSave, saving }: any) {
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear() - 20);
+  const [month, setMonth] = useState(now.getMonth());
+  const [day, setDay] = useState(now.getDate());
+  const [selectingYear, setSelectingYear] = useState(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value || '') ? new Date(`${value}T00:00:00`) : new Date(now.getFullYear() - 20, now.getMonth(), now.getDate());
+    setYear(parsed.getFullYear());
+    setMonth(parsed.getMonth());
+    setDay(parsed.getDate());
+    setSelectingYear(false);
+  }, [visible, value]);
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const years = Array.from({ length: 100 }, (_, i) => now.getFullYear() - i);
+  const chooseMonth = (nextMonth: number) => {
+    const next = new Date(year, nextMonth, 1);
+    setYear(next.getFullYear());
+    setMonth(next.getMonth());
+    setDay(Math.min(day, new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate()));
+  };
+  const save = () => {
+    const selected = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    onSave(selected);
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={s.personalModalOverlay}>
+        <View style={s.calendarModalCard}>
+          <Text style={s.personalModalTitle}>出生年月日</Text>
+          {selectingYear ? (
+            <>
+              <Text style={s.calendarSelectHint}>選擇年份</Text>
+              <ScrollView style={s.yearPickerScroll} contentContainerStyle={s.yearPickerGrid}>
+                {years.map(item => (
+                  <TouchableOpacity key={item} style={[s.yearChoice, item === year && s.yearChoiceActive]} onPress={() => { setYear(item); setSelectingYear(false); }}>
+                    <Text style={[s.yearChoiceText, item === year && s.yearChoiceTextActive]}>{item}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </>
+          ) : (
+            <>
+              <View style={s.calendarMonthRow}>
+                <TouchableOpacity style={s.calendarArrow} onPress={() => chooseMonth(month - 1)}><Text style={s.calendarArrowText}>‹</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => setSelectingYear(true)}>
+                  <Text style={s.calendarMonthTitle}>{year} 年 {month + 1} 月 ▾</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.calendarArrow} onPress={() => chooseMonth(month + 1)}><Text style={s.calendarArrowText}>›</Text></TouchableOpacity>
+              </View>
+              <View style={s.birthWeekRow}>
+                {WEEK_DAYS.map(label => <Text key={label} style={s.birthWeekText}>{label}</Text>)}
+              </View>
+              <View style={s.birthDaysGrid}>
+                {Array.from({ length: firstWeekday }).map((_, i) => <View key={`blank-${i}`} style={s.birthDayCell} />)}
+                {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(item => (
+                  <TouchableOpacity key={item} style={[s.birthDayCell, item === day && s.birthDayActive]} onPress={() => setDay(item)}>
+                    <Text style={[s.birthDayText, item === day && s.birthDayTextActive]}>{item}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </>
+          )}
+          <View style={s.personalModalActions}>
+            <TouchableOpacity style={s.settingEditorCancel} onPress={onClose}><Text style={s.settingEditorCancelText}>取消</Text></TouchableOpacity>
+            <TouchableOpacity style={s.settingEditorSave} onPress={save} disabled={saving}>
+              {saving ? <ActivityIndicator color="#fff" /> : <Text style={s.settingEditorSaveText}>儲存</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function PersonalInfoScreen({ navigation }: any) {
   const { token, username, setUsername, logout } = useContext(AuthContext);
   const [profile, setProfile] = useState<any>(null);
   const [name, setName] = useState(username);
-  const [birthDate, setBirthDate] = useState('');
-  const [phone, setPhone] = useState('');
-  const [newEmail, setNewEmail] = useState('');
-  const [emailPassword, setEmailPassword] = useState('');
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [passwordVerified, setPasswordVerified] = useState(false);
-  const [newPassword, setNewPassword] = useState('');
-  const [newConfirm, setNewConfirm] = useState('');
-  const [identityErrors, setIdentityErrors] = useState<Record<string, string>>({});
-  const [accountErrors, setAccountErrors] = useState<Record<string, string>>({});
-  const [passwordErrors, setPasswordErrors] = useState<Record<string, string>>({});
+  const [birthModal, setBirthModal] = useState(false);
+  const [phoneModal, setPhoneModal] = useState(false);
+  const [nameError, setNameError] = useState('');
   const [saving, setSaving] = useState('');
 
   const loadProfile = async () => {
@@ -2467,80 +2587,232 @@ function PersonalInfoScreen({ navigation }: any) {
       if (!res.ok) return;
       setProfile(data);
       setName(data.username || username);
-      setBirthDate(data.birth_date || '');
-      setPhone(data.phone || '');
-      setNewEmail(data.email || '');
     } catch { Alert.alert('網路錯誤', '目前無法取得個人資料。'); }
   };
 
   useEffect(() => { loadProfile(); }, [token]);
+  useEffect(() => {
+    const unsub = navigation.addListener('focus', loadProfile);
+    return unsub;
+  }, [navigation, token]);
 
-  const saveIdentity = async () => {
-    const errors: Record<string, string> = {};
-    if (!name.trim()) errors.name = '請輸入暱稱';
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate.trim())) errors.birth = '請使用 YYYY-MM-DD';
-    if (!/^09\d{8}$/.test(phone.replace(/[\s-]/g, ''))) errors.phone = '請輸入有效手機號碼';
-    setIdentityErrors(errors);
-    if (Object.keys(errors).length) return;
-    setSaving('identity');
+  const updateProfile = async (patch: any, kind: string) => {
+    setSaving(kind);
     try {
       const res = await fetch(`${BASE_URL}/me`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ username: name.trim(), birth_date: birthDate.trim(), phone: phone.trim() }),
+        body: JSON.stringify(patch),
       });
       const data = await res.json();
-      if (!res.ok) { Alert.alert('儲存失敗', data.detail || '請稍後再試'); return; }
+      if (!res.ok) { Alert.alert('儲存失敗', data.detail || '請稍後再試'); return false; }
       setProfile(data);
-      setUsername(data.username);
-      Alert.alert('已完成綁定', '生日祝福與手機找回密碼已可使用。');
-    } catch { Alert.alert('網路錯誤', '目前無法儲存個人資料。'); } finally { setSaving(''); }
+      if (data.username) setUsername(data.username);
+      return true;
+    } catch {
+      Alert.alert('網路錯誤', '目前無法儲存個人資料。');
+      return false;
+    } finally {
+      setSaving('');
+    }
   };
 
-  const changeEmail = async () => {
-    const errors: Record<string, string> = {};
-    if (!isTestAccount(newEmail)) errors.email = '請使用 @test.com';
-    if (!emailPassword) errors.password = '請輸入密碼';
-    setAccountErrors(errors);
-    if (Object.keys(errors).length) return;
-    setSaving('email');
-    try {
-      const res = await fetch(`${BASE_URL}/me/change-email`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ new_email: newEmail.trim(), password: emailPassword }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setAccountErrors({ password: data.detail || '密碼錯誤' }); return; }
-      setProfile((p: any) => ({ ...p, email: data.email }));
-      setEmailPassword('');
-      Alert.alert('帳號已更新', `之後請使用 ${data.email} 登入。`);
-    } catch { Alert.alert('網路錯誤'); } finally { setSaving(''); }
+  const saveName = async () => {
+    if (!name.trim()) { setNameError('請輸入暱稱'); return; }
+    setNameError('');
+    if (await updateProfile({ username: name.trim() }, 'name')) {
+      Alert.alert('已更新', '暱稱已儲存。');
+    }
   };
 
-  const verifyPassword = async () => {
-    setPasswordErrors({});
-    if (!currentPassword) { setPasswordErrors({ current: '請輸入原密碼' }); return; }
-    setSaving('verify');
+  return (
+    <KeyboardAvoidingView style={s.profileV2Page} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView contentContainerStyle={s.personalScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <View style={s.personalHeader}>
+          <BackButton onPress={() => navigation.goBack()} />
+          <Text style={s.personalPageTitle}>個人資料</Text>
+        </View>
+        <View style={s.personalCard}>
+          <View style={s.identityStatusRow}>
+            <Text style={s.personalSectionTitle}>身份綁定</Text>
+            <Text style={[s.identityStatus, profile?.identity_completed && s.identityStatusDone]}>
+              {profile?.identity_completed ? '已完成' : '尚未完成'}
+            </Text>
+          </View>
+          <Text style={s.personalDesc}>設定生日與手機，生日當天會收到小島精靈的祝福，也能用手機找回密碼。</Text>
+          <Text style={s.personalInputLabel}>暱稱</Text>
+          <TextInput style={s.personalInput} value={name} onChangeText={v => { setName(v); setNameError(''); }} />
+          {!!nameError && <Text style={s.fieldErrorWide}>＊{nameError}</Text>}
+          <TouchableOpacity style={s.personalSmallSave} onPress={saveName} disabled={saving === 'name'}>
+            {saving === 'name' ? <ActivityIndicator color="#fff" /> : <Text style={s.personalSmallSaveText}>儲存暱稱</Text>}
+          </TouchableOpacity>
+          <TouchableOpacity style={s.personalLinkRow} onPress={() => setBirthModal(true)}>
+            <View>
+              <Text style={s.personalRowLabel}>出生年月日</Text>
+              <Text style={s.personalRowValue}>{profile?.birth_date || '尚未設定'}</Text>
+            </View>
+            <Text style={s.personalRowArrow}>›</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={s.personalLinkRow} onPress={() => setPhoneModal(true)}>
+            <View>
+              <Text style={s.personalRowLabel}>綁定手機</Text>
+              <Text style={s.personalRowValue}>{profile?.phone || '尚未綁定'}</Text>
+            </View>
+            <Text style={s.personalRowArrow}>›</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={s.personalCard}>
+          <Text style={s.personalSectionTitle}>帳戶安全</Text>
+          <Text style={s.personalDesc}>修改登入帳號或密碼前，會先確認你的原帳號與密碼。</Text>
+          <TouchableOpacity style={s.personalLinkRow} onPress={() => navigation.navigate('ChangeEmail')}>
+            <View>
+              <Text style={s.personalRowLabel}>改動帳號</Text>
+              <Text style={s.personalRowValue}>{profile?.email || ''}</Text>
+            </View>
+            <Text style={s.personalRowArrow}>›</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={s.personalLinkRow} onPress={() => navigation.navigate('ChangePassword')}>
+            <View>
+              <Text style={s.personalRowLabel}>改動密碼</Text>
+              <Text style={s.personalRowValue}>設定新的登入密碼</Text>
+            </View>
+            <Text style={s.personalRowArrow}>›</Text>
+          </TouchableOpacity>
+        </View>
+        <TouchableOpacity style={s.personalLogoutBtn} onPress={() => Alert.alert('確認登出', '確定要登出嗎？', [{ text: '取消', style: 'cancel' }, { text: '登出', style: 'destructive', onPress: logout }])}>
+          <Text style={s.personalLogoutText}>登出</Text>
+        </TouchableOpacity>
+      </ScrollView>
+
+      <BirthdayPickerModal
+        visible={birthModal}
+        value={profile?.birth_date}
+        saving={saving === 'birth'}
+        onClose={() => setBirthModal(false)}
+        onSave={async (value: string) => { if (await updateProfile({ birth_date: value }, 'birth')) setBirthModal(false); }}
+      />
+      <PhoneBindingModal
+        visible={phoneModal}
+        value={profile?.phone}
+        saving={saving === 'phone'}
+        onClose={() => setPhoneModal(false)}
+        onSave={async (value: string) => { if (await updateProfile({ phone: value }, 'phone')) setPhoneModal(false); }}
+      />
+    </KeyboardAvoidingView>
+  );
+}
+
+function ChangeEmailScreen({ navigation }: any) {
+  const { token } = useContext(AuthContext);
+  const [step, setStep] = useState<'verify' | 'new'>('verify');
+  const [originalEmail, setOriginalEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+
+  const verify = async () => {
+    setErrors({});
+    if (!originalEmail.trim() || !password) { setErrors({ verify: '請輸入原帳號與密碼' }); return; }
+    setLoading(true);
     try {
       const res = await fetch(`${BASE_URL}/me/verify-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ password: currentPassword }),
+        body: JSON.stringify({ email: originalEmail.trim(), password }),
       });
-      const data = await res.json();
-      if (!res.ok) { setPasswordErrors({ current: data.detail || '原密碼錯誤' }); return; }
-      setPasswordVerified(true);
-    } catch { Alert.alert('網路錯誤'); } finally { setSaving(''); }
+      if (!res.ok) { setErrors({ verify: '帳號密碼錯誤' }); return; }
+      setStep('new');
+    } catch { Alert.alert('網路錯誤', '目前無法確認帳號。'); } finally { setLoading(false); }
   };
 
-  const changePassword = async () => {
-    const errors: Record<string, string> = {};
-    if (!isStrongPassword(newPassword)) errors.new = '至少8位（包含英文、數字、大寫、小寫）';
-    if (newPassword !== newConfirm) errors.confirm = '兩次輸入的密碼不一致';
-    setPasswordErrors(errors);
-    if (Object.keys(errors).length) return;
-    setSaving('password');
+  const save = async () => {
+    if (!isTestAccount(newEmail)) { setErrors({ newEmail: '請用 @test.com 結尾' }); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`${BASE_URL}/me/change-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ new_email: newEmail.trim(), password }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setErrors({ newEmail: data.detail || '無法更新帳號' }); return; }
+      Alert.alert('帳號已更新', `之後請使用 ${data.email} 登入。`);
+      navigation.goBack();
+    } catch { Alert.alert('網路錯誤', '目前無法更新帳號。'); } finally { setLoading(false); }
+  };
+
+  return (
+    <KeyboardAvoidingView style={s.profileV2Page} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView contentContainerStyle={s.accountFlowScroll} keyboardShouldPersistTaps="handled">
+        <View style={s.personalHeader}>
+          <BackButton onPress={() => navigation.goBack()} />
+          <Text style={s.personalPageTitle}>改動帳號</Text>
+        </View>
+        <View style={s.accountFlowCard}>
+          {step === 'verify' ? (
+            <>
+              <Text style={s.accountFlowTitle}>確認原帳號</Text>
+              <Text style={s.personalDesc}>請先輸入原帳號與密碼，確認是本人後才能修改。</Text>
+              <Text style={s.personalInputLabel}>原帳號</Text>
+              <TextInput style={s.personalInput} value={originalEmail} onChangeText={v => { setOriginalEmail(v); setErrors({}); }} autoCapitalize="none" keyboardType="email-address" />
+              <Text style={s.personalInputLabel}>密碼</Text>
+              <PasswordField value={password} placeholder="請輸入密碼" onChangeText={(v: string) => { setPassword(v); setErrors({}); }} />
+              {!!errors.verify && <Text style={s.fieldErrorWide}>＊{errors.verify}</Text>}
+              <TouchableOpacity style={s.personalSaveBtn} onPress={verify} disabled={loading}>
+                {loading ? <ActivityIndicator color="#fff" /> : <Text style={s.personalSaveText}>下一步</Text>}
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <Text style={s.accountFlowTitle}>請輸入新帳號</Text>
+              <Text style={s.personalDesc}>登入帳號需使用 @test.com 結尾。</Text>
+              <TextInput style={s.personalInput} value={newEmail} onChangeText={v => { setNewEmail(v); setErrors({}); }} placeholder="newname@test.com" placeholderTextColor={C.muted} autoCapitalize="none" keyboardType="email-address" />
+              {!!errors.newEmail && <Text style={s.fieldErrorWide}>＊{errors.newEmail}</Text>}
+              <TouchableOpacity style={s.personalSaveBtn} onPress={save} disabled={loading}>
+                {loading ? <ActivityIndicator color="#fff" /> : <Text style={s.personalSaveText}>儲存</Text>}
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+
+function ChangePasswordScreen({ navigation }: any) {
+  const { token } = useContext(AuthContext);
+  const [step, setStep] = useState<'verify' | 'new'>('verify');
+  const [originalEmail, setOriginalEmail] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+
+  const verify = async () => {
+    setErrors({});
+    if (!originalEmail.trim() || !currentPassword) { setErrors({ verify: '請輸入原帳號與密碼' }); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`${BASE_URL}/me/verify-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email: originalEmail.trim(), password: currentPassword }),
+      });
+      if (!res.ok) { setErrors({ verify: '帳號密碼錯誤' }); return; }
+      setStep('new');
+    } catch { Alert.alert('網路錯誤', '目前無法確認帳號。'); } finally { setLoading(false); }
+  };
+
+  const save = async () => {
+    const nextErrors: Record<string, string> = {};
+    if (!isStrongPassword(newPassword)) nextErrors.password = '密碼不得少於8位且必須包含英文大小寫、數字';
+    if (newPassword !== confirm) nextErrors.confirm = '兩次輸入的密碼不一致';
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length) return;
+    setLoading(true);
     try {
       const res = await fetch(`${BASE_URL}/me/change-password`, {
         method: 'POST',
@@ -2548,83 +2820,48 @@ function PersonalInfoScreen({ navigation }: any) {
         body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
       });
       const data = await res.json();
-      if (!res.ok) { setPasswordErrors({ current: data.detail || '更新失敗' }); return; }
-      setCurrentPassword('');
-      setNewPassword('');
-      setNewConfirm('');
-      setPasswordVerified(false);
+      if (!res.ok) { setErrors({ password: data.detail || '無法更新密碼' }); return; }
       Alert.alert('密碼已更新', '下次登入請使用新密碼。');
-    } catch { Alert.alert('網路錯誤'); } finally { setSaving(''); }
+      navigation.goBack();
+    } catch { Alert.alert('網路錯誤', '目前無法更新密碼。'); } finally { setLoading(false); }
   };
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScreenBg source={require('./assets/login.png')}>
-        <ScrollView contentContainerStyle={s.personalScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-          <View style={s.personalHeader}>
-            <BackButton onPress={() => navigation.goBack()} />
-            <Text style={s.personalPageTitle}>個人資料</Text>
-          </View>
-
-          <View style={s.personalCard}>
-            <View style={s.identityStatusRow}>
-              <Text style={s.personalSectionTitle}>身份綁定</Text>
-              <Text style={[s.identityStatus, profile?.identity_completed && s.identityStatusDone]}>
-                {profile?.identity_completed ? '已完成' : '尚未完成'}
-              </Text>
-            </View>
-            <Text style={s.personalDesc}>設定生日與手機，生日當天會收到小島精靈的祝福，也能用手機找回密碼。</Text>
-            <Text style={s.personalInputLabel}>暱稱</Text>
-            <TextInput style={s.personalInput} value={name} onChangeText={v => { setName(v); setIdentityErrors(e => ({ ...e, name: '' })); }} />
-            {!!identityErrors.name && <Text style={s.fieldError}>*{identityErrors.name}</Text>}
-            <Text style={s.personalInputLabel}>出生年月日</Text>
-            <TextInput style={s.personalInput} placeholder="YYYY-MM-DD" placeholderTextColor={C.muted} value={birthDate} onChangeText={v => { setBirthDate(v); setIdentityErrors(e => ({ ...e, birth: '' })); }} keyboardType="numbers-and-punctuation" />
-            {!!identityErrors.birth && <Text style={s.fieldError}>*{identityErrors.birth}</Text>}
-            <Text style={s.personalInputLabel}>綁定手機</Text>
-            <TextInput style={s.personalInput} placeholder="0912345678" placeholderTextColor={C.muted} value={phone} onChangeText={v => { setPhone(v); setIdentityErrors(e => ({ ...e, phone: '' })); }} keyboardType="phone-pad" />
-            {!!identityErrors.phone && <Text style={s.fieldError}>*{identityErrors.phone}</Text>}
-            <TouchableOpacity style={s.personalSaveBtn} onPress={saveIdentity} disabled={saving === 'identity'}>
-              {saving === 'identity' ? <ActivityIndicator color="white" /> : <Text style={s.personalSaveText}>儲存身份資料</Text>}
-            </TouchableOpacity>
-          </View>
-
-          <View style={s.personalCard}>
-            <Text style={s.personalSectionTitle}>改動帳號</Text>
-            <Text style={s.personalDesc}>登入帳號必須使用 @test.com 結尾，確認密碼後才可更換。</Text>
-            <Text style={s.personalInputLabel}>登入帳號</Text>
-            <TextInput style={s.personalInput} value={newEmail} onChangeText={v => { setNewEmail(v); setAccountErrors(e => ({ ...e, email: '' })); }} autoCapitalize="none" keyboardType="email-address" />
-            {!!accountErrors.email && <Text style={s.fieldError}>*{accountErrors.email}</Text>}
-            <Text style={s.personalInputLabel}>目前密碼</Text>
-            <PasswordField value={emailPassword} placeholder="輸入密碼以確認" onChangeText={(v: string) => { setEmailPassword(v); setAccountErrors(e => ({ ...e, password: '' })); }} error={accountErrors.password} />
-            <TouchableOpacity style={s.personalOutlineBtn} onPress={changeEmail} disabled={saving === 'email'}>
-              {saving === 'email' ? <ActivityIndicator color={C.accent} /> : <Text style={s.personalOutlineText}>更新帳號</Text>}
-            </TouchableOpacity>
-          </View>
-
-          <View style={s.personalCard}>
-            <Text style={s.personalSectionTitle}>改動密碼</Text>
-            <Text style={s.personalDesc}>先輸入原密碼驗證，再設定符合安全規則的新密碼。</Text>
-            <PasswordField value={currentPassword} placeholder="原密碼" onChangeText={(v: string) => { setCurrentPassword(v); setPasswordErrors(e => ({ ...e, current: '' })); setPasswordVerified(false); }} error={passwordErrors.current} />
-            {!passwordVerified ? (
-              <TouchableOpacity style={s.personalOutlineBtn} onPress={verifyPassword} disabled={saving === 'verify'}>
-                {saving === 'verify' ? <ActivityIndicator color={C.accent} /> : <Text style={s.personalOutlineText}>驗證原密碼</Text>}
+    <KeyboardAvoidingView style={s.profileV2Page} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView contentContainerStyle={s.accountFlowScroll} keyboardShouldPersistTaps="handled">
+        <View style={s.personalHeader}>
+          <BackButton onPress={() => navigation.goBack()} />
+          <Text style={s.personalPageTitle}>改動密碼</Text>
+        </View>
+        <View style={s.accountFlowCard}>
+          {step === 'verify' ? (
+            <>
+              <Text style={s.accountFlowTitle}>確認原帳號</Text>
+              <Text style={s.personalDesc}>請先輸入原帳號與密碼，確認是本人後才能修改。</Text>
+              <Text style={s.personalInputLabel}>原帳號</Text>
+              <TextInput style={s.personalInput} value={originalEmail} onChangeText={v => { setOriginalEmail(v); setErrors({}); }} autoCapitalize="none" keyboardType="email-address" />
+              <Text style={s.personalInputLabel}>密碼</Text>
+              <PasswordField value={currentPassword} placeholder="請輸入密碼" onChangeText={(v: string) => { setCurrentPassword(v); setErrors({}); }} />
+              {!!errors.verify && <Text style={s.fieldErrorWide}>＊{errors.verify}</Text>}
+              <TouchableOpacity style={s.personalSaveBtn} onPress={verify} disabled={loading}>
+                {loading ? <ActivityIndicator color="#fff" /> : <Text style={s.personalSaveText}>下一步</Text>}
               </TouchableOpacity>
-            ) : (
-              <>
-                <PasswordField value={newPassword} placeholder="新密碼" onChangeText={(v: string) => { setNewPassword(v); setPasswordErrors(e => ({ ...e, new: '' })); }} error={passwordErrors.new} />
-                <PasswordField value={newConfirm} placeholder="再次輸入新密碼" onChangeText={(v: string) => { setNewConfirm(v); setPasswordErrors(e => ({ ...e, confirm: '' })); }} error={passwordErrors.confirm} />
-                <TouchableOpacity style={s.personalSaveBtn} onPress={changePassword} disabled={saving === 'password'}>
-                  {saving === 'password' ? <ActivityIndicator color="white" /> : <Text style={s.personalSaveText}>更新密碼</Text>}
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
-
-          <TouchableOpacity style={s.personalLogoutBtn} onPress={() => Alert.alert('確認登出', '確定要登出嗎？', [{ text: '取消', style: 'cancel' }, { text: '登出', style: 'destructive', onPress: logout }])}>
-            <Text style={s.personalLogoutText}>登出</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      </ScreenBg>
+            </>
+          ) : (
+            <>
+              <Text style={s.accountFlowTitle}>請輸入新密碼</Text>
+              <Text style={s.personalDesc}>密碼需至少 8 位，並包含英文大小寫與數字。</Text>
+              <PasswordField value={newPassword} placeholder="輸入新密碼" onChangeText={(v: string) => { setNewPassword(v); setErrors(e => ({ ...e, password: '' })); }} />
+              {!!errors.password && <Text style={s.fieldErrorWide}>＊{errors.password}</Text>}
+              <PasswordField value={confirm} placeholder="請確認新密碼" onChangeText={(v: string) => { setConfirm(v); setErrors(e => ({ ...e, confirm: '' })); }} />
+              {!!errors.confirm && <Text style={s.fieldErrorWide}>＊{errors.confirm}</Text>}
+              <TouchableOpacity style={s.personalSaveBtn} onPress={save} disabled={loading}>
+                {loading ? <ActivityIndicator color="#fff" /> : <Text style={s.personalSaveText}>儲存</Text>}
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
@@ -2708,6 +2945,8 @@ function RootNavigator() {
       <Stack.Screen name="WeeklyImpact" component={WeeklyImpactScreen} />
       <Stack.Screen name="Favorites" component={FavoritesScreen} />
       <Stack.Screen name="PersonalInfo" component={PersonalInfoScreen} />
+      <Stack.Screen name="ChangeEmail" component={ChangeEmailScreen} />
+      <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
     </Stack.Navigator>
   );
 }
@@ -3179,12 +3418,45 @@ const s = StyleSheet.create({
   personalDesc: { fontSize: 13, lineHeight: 21, color: C.sub, fontFamily: FONT_REG, marginBottom: 14 },
   personalInputLabel: { fontSize: 13, lineHeight: 20, color: C.sub, fontFamily: FONT_BOLD, marginBottom: 5, marginTop: 4 },
   personalInput: { height: 48, borderWidth: 1, borderColor: C.line, borderRadius: 12, paddingHorizontal: 14, backgroundColor: '#FFFDF8', fontSize: 15, fontFamily: FONT_REG, color: C.text, marginBottom: 10 },
+  fieldErrorWide: { marginTop: -4, marginBottom: 10, marginLeft: 4, fontSize: 12, lineHeight: 20, color: '#C75C50', fontFamily: FONT_MED },
   personalSaveBtn: { height: 50, borderRadius: 25, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
   personalSaveText: { color: '#FFFFFF', fontSize: 15, fontFamily: FONT_BOLD },
+  personalSmallSave: { alignSelf: 'flex-end', height: 38, paddingHorizontal: 18, borderRadius: 19, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
+  personalSmallSaveText: { color: '#FFFFFF', fontSize: 13, fontFamily: FONT_BOLD },
+  personalLinkRow: { minHeight: 68, borderTopWidth: 1, borderTopColor: '#EFE7DA', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 13 },
+  personalRowLabel: { fontSize: 15, lineHeight: 22, fontFamily: FONT_BOLD, color: C.text },
+  personalRowValue: { marginTop: 3, fontSize: 13, lineHeight: 20, fontFamily: FONT_REG, color: C.sub },
+  personalRowArrow: { fontSize: 27, lineHeight: 32, fontFamily: FONT_REG, color: C.accent },
   personalOutlineBtn: { height: 48, borderRadius: 24, borderWidth: 1, borderColor: C.accent, alignItems: 'center', justifyContent: 'center', marginTop: 7 },
   personalOutlineText: { color: C.accent, fontSize: 15, fontFamily: FONT_BOLD },
   personalLogoutBtn: { height: 52, borderRadius: 26, backgroundColor: '#FFF2EF', justifyContent: 'center', alignItems: 'center', marginTop: 4, marginBottom: 30 },
   personalLogoutText: { fontSize: 16, fontFamily: FONT_BOLD, color: C.danger },
+  personalModalOverlay: { flex: 1, backgroundColor: 'rgba(40,32,26,0.32)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 },
+  personalModalCard: { width: '100%', borderRadius: 25, backgroundColor: '#FFFDF8', borderWidth: 1, borderColor: C.line, padding: 22 },
+  personalModalTitle: { textAlign: 'center', fontSize: 22, lineHeight: 30, fontFamily: FONT_BOLD, color: C.text, marginBottom: 18 },
+  personalModalActions: { flexDirection: 'row', gap: 12, marginTop: 17 },
+  calendarModalCard: { width: '100%', minHeight: 454, borderRadius: 25, backgroundColor: '#FFFDF8', borderWidth: 1, borderColor: C.line, paddingHorizontal: 20, paddingTop: 22, paddingBottom: 18 },
+  calendarMonthRow: { height: 46, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  calendarArrow: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#F5F0E8', alignItems: 'center', justifyContent: 'center' },
+  calendarArrowText: { fontSize: 28, lineHeight: 32, color: C.text, fontFamily: FONT_REG },
+  calendarMonthTitle: { fontSize: 18, lineHeight: 26, color: C.text, fontFamily: FONT_BOLD },
+  birthWeekRow: { flexDirection: 'row', marginTop: 6, marginBottom: 4 },
+  birthWeekText: { width: `${100 / 7}%`, textAlign: 'center', fontSize: 12, lineHeight: 20, color: C.sub, fontFamily: FONT_BOLD },
+  birthDaysGrid: { flexDirection: 'row', flexWrap: 'wrap', minHeight: 215 },
+  birthDayCell: { width: `${100 / 7}%`, height: 38, alignItems: 'center', justifyContent: 'center', borderRadius: 19 },
+  birthDayActive: { backgroundColor: C.accent },
+  birthDayText: { fontSize: 14, color: C.text, fontFamily: FONT_REG },
+  birthDayTextActive: { color: '#FFFFFF', fontFamily: FONT_BOLD },
+  calendarSelectHint: { textAlign: 'center', fontSize: 14, color: C.sub, fontFamily: FONT_MED, marginBottom: 10 },
+  yearPickerScroll: { height: 275, marginBottom: 4 },
+  yearPickerGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingBottom: 10 },
+  yearChoice: { width: '23%', height: 42, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F5F0E8' },
+  yearChoiceActive: { backgroundColor: C.accent },
+  yearChoiceText: { fontSize: 14, fontFamily: FONT_REG, color: C.text },
+  yearChoiceTextActive: { color: '#FFFFFF', fontFamily: FONT_BOLD },
+  accountFlowScroll: { paddingHorizontal: 22, paddingTop: 56, paddingBottom: 54, minHeight: SH },
+  accountFlowCard: { borderRadius: 18, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: C.line, padding: 20, marginTop: 24 },
+  accountFlowTitle: { fontSize: 22, lineHeight: 31, fontFamily: FONT_BOLD, color: C.text, marginBottom: 10 },
   optionCard: { width: '100%', borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.98)', padding: 20, borderWidth: 1, borderColor: C.line },
   optionItem: { paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(232,224,213,0.55)' },
   settingRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },

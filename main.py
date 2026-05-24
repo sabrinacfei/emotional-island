@@ -100,6 +100,7 @@ class ChangePasswordInput(BaseModel):
     new_password: str
 
 class VerifyPasswordInput(BaseModel):
+    email: Optional[EmailStr] = None
     password: str
 
 class ResetPasswordByPhoneInput(BaseModel):
@@ -134,13 +135,13 @@ def validate_account_password(password: str) -> str:
         or not re.search(r"[a-z]", password)
         or not re.search(r"\d", password)
     ):
-        raise HTTPException(status_code=400, detail="密碼至少8位（包含英文、數字、大寫、小寫）")
+        raise HTTPException(status_code=400, detail="密碼不得少於8位且必須包含英文大小寫、數字")
     return password
 
 def normalize_phone(phone: str) -> str:
     normalized = re.sub(r"[\s\-()]", "", str(phone or ""))
     if not re.fullmatch(r"09\d{8}", normalized):
-        raise HTTPException(status_code=400, detail="請輸入有效手機號碼（例如 0912345678）")
+        raise HTTPException(status_code=400, detail="請用09開頭，輸入正確手機號碼，共10位")
     return normalized
 
 def validate_birth_date(value: str) -> str:
@@ -1083,8 +1084,9 @@ async def change_password(data: ChangePasswordInput, uid: ObjectId = Depends(get
 @app.post("/me/verify-password")
 async def verify_current_password(data: VerifyPasswordInput, uid: ObjectId = Depends(get_current_user)):
     user = await db.users.find_one({"_id": uid})
-    if not user or not verify_password(data.password, user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="原密碼錯誤")
+    email_matches = not data.email or normalize_email(str(data.email)) == normalize_email(user.get("email", "")) if user else False
+    if not user or not email_matches or not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="帳號密碼錯誤")
     return {"ok": True}
 
 @app.post("/password/reset-by-phone")
