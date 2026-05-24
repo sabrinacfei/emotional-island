@@ -76,6 +76,15 @@ class CreateAnalysisInput(BaseModel):
 class DiaryInput(BaseModel):
     content: str
 
+class HistoricalFragmentInput(BaseModel):
+    time_label: str
+    content: str
+
+class HistoricalDayImportInput(BaseModel):
+    date_label: str
+    fragments: List[HistoricalFragmentInput]
+    replace_existing: bool = True
+
 class DailyDiaryFinalizeInput(BaseModel):
     final_content: str
 
@@ -294,6 +303,11 @@ def parse_generate_time(value: str) -> tuple[int, int]:
     if h < 0 or h > 23 or m < 0 or m > 59:
         raise HTTPException(status_code=400, detail="生成時間超出範圍")
     return h, m
+
+def historical_fragment_timestamp(date_label: str, time_label: str) -> datetime:
+    day = parse_local_date(date_label)
+    hour, minute = parse_generate_time(time_label)
+    return day.replace(hour=hour, minute=minute).astimezone(timezone.utc)
 
 def scheduled_at(date_label: str, generate_time: str) -> datetime:
     base = parse_local_date(date_label)
@@ -520,7 +534,13 @@ async def set_daily_trend(uid: ObjectId, date_str: str, scores: Dict[str, float]
         upsert=True,
     )
 
-async def finalize_daily_diary(uid: ObjectId, date_label: str, final_content: str, auto: bool = False) -> dict:
+async def finalize_daily_diary(
+    uid: ObjectId,
+    date_label: str,
+    final_content: str,
+    auto: bool = False,
+    emit_notifications: bool = True,
+) -> dict:
     if not final_content.strip():
         raise HTTPException(status_code=400, detail="日記內容不可為空")
 
@@ -633,19 +653,20 @@ async def finalize_daily_diary(uid: ObjectId, date_label: str, final_content: st
     if is_new_tree:
         await record_achievement(uid, "first_planting", 1)
         await record_achievement(uid, "watering", 1)
-        await create_notification(
-            uid,
-            "TREE_GROWN",
-            "新的心情樹長出來了",
-            "你今天的心情樹已經長出來了。它代表你今天經歷過的心情。",
-            "查看當日樹",
-            "DayTreeScreen",
-            {"date": date_label, "analysisId": str(analysis_id)},
-            f"tree-grown:{date_label}",
-        )
+        if emit_notifications:
+            await create_notification(
+                uid,
+                "TREE_GROWN",
+                "新的心情樹長出來了",
+                "你今天的心情樹已經長出來了。它代表你今天經歷過的心情。",
+                "查看當日樹",
+                "DayTreeScreen",
+                {"date": date_label, "analysisId": str(analysis_id)},
+                f"tree-grown:{date_label}",
+            )
     if not auto:
         await record_achievement(uid, "self_care", 1)
-    if risk_level == "high":
+    if risk_level == "high" and emit_notifications:
         await create_notification(
             uid,
             "HIGH_RISK_ALERT",
@@ -657,16 +678,17 @@ async def finalize_daily_diary(uid: ObjectId, date_label: str, final_content: st
             f"high-risk:{date_label}",
             "urgent",
         )
-    await create_notification(
-        uid,
-        "DAY_ANALYSIS_READY",
-        "今天的心情分析完成了",
-        "要不要看看小島精靈從你的日記裡讀到了什麼？",
-        "查看當日分析",
-        "DayAnalysisScreen",
-        {"date": date_label, "analysisId": str(analysis_id)},
-        f"analysis-ready:{date_label}",
-    )
+    if emit_notifications:
+        await create_notification(
+            uid,
+            "DAY_ANALYSIS_READY",
+            "今天的心情分析完成了",
+            "要不要看看小島精靈從你的日記裡讀到了什麼？",
+            "查看當日分析",
+            "DayAnalysisScreen",
+            {"date": date_label, "analysisId": str(analysis_id)},
+            f"analysis-ready:{date_label}",
+        )
 
     saved = await db.emotion_analyses.find_one({"_id": analysis_id})
     return serialize_doc(saved)
@@ -1213,6 +1235,109 @@ async def create_diary(data: DiaryInput, uid: ObjectId = Depends(get_current_use
 async def get_diary(uid: ObjectId = Depends(get_current_user)):
     docs = await db.conversations.find({"userId": uid}).sort("timestamp", -1).to_list(100)
     return [serialize_doc(d) for d in docs]
+
+@app.post("/diary/import-historical-day")
+async def import_historical_day(
+    data: HistoricalDayImportInput,
+    uid: ObjectId = Depends(get_current_user),
+):
+    """
+    匯入目前登入帳號的歷史小日記，並讓正式統整/分析流程產生當日資料。
+    這個端點用於展示資料回填，不發送歷史日期的提醒推播。
+    """
+    target_day = parse_local_date(data.date_label).date()
+    if target_day >= datetime.now(APP_TZ).date():
+        raise HTTPException(status_code=400, detail="歷史匯入日期必須早於今天")
+    if len(data.fragments) not in [3, 4]:
+        raise HTTPException(status_code=400, detail="每一天需提供 3 或 4 則小日記")
+
+    prepared_fragments = []
+    for index, fragment in enumerate(data.fragments, start=1):
+        content = fragment.content.strip()
+        if not 50 <= len(content) <= 100:
+            raise HTTPException(
+                status_code=400,
+                detail=f"第 {index} 則小日記須為 50 至 100 字，目前為 {len(content)} 字",
+            )
+        prepared_fragments.append({
+            "content": content,
+            "timestamp": historical_fragment_timestamp(data.date_label, fragment.time_label),
+        })
+
+    existing_fragments = await db.conversations.count_documents({
+        "userId": uid,
+        "type": "fragment",
+        "date_label": data.date_label,
+    })
+    existing_daily = await db.daily_diaries.find_one({"userId": uid, "date_label": data.date_label})
+    if (existing_fragments or existing_daily) and not data.replace_existing:
+        raise HTTPException(status_code=409, detail="這一天已有日記資料，請確認是否覆蓋")
+
+    if data.replace_existing:
+        await db.conversations.delete_many({
+            "userId": uid,
+            "type": "fragment",
+            "date_label": data.date_label,
+        })
+
+    imported_at = datetime.now(timezone.utc)
+    result = await db.conversations.insert_many([
+        {
+            "userId": uid,
+            "type": "fragment",
+            "status": "saved",
+            "source": "historical_import",
+            "date_label": data.date_label,
+            "content": fragment["content"],
+            "timestamp": fragment["timestamp"],
+            "created_at": fragment["timestamp"],
+            "imported_at": imported_at,
+        }
+        for fragment in prepared_fragments
+    ])
+    fragments = await get_fragments_for_date(uid, data.date_label)
+    draft_content = await compose_daily_draft(fragments)
+    if not draft_content.strip():
+        raise HTTPException(status_code=500, detail="當日統整日記產生失敗")
+
+    if existing_daily:
+        await db.daily_diaries.update_one(
+            {"_id": existing_daily["_id"], "userId": uid},
+            {"$set": {
+                "fragment_ids": result.inserted_ids,
+                "draft_content": draft_content,
+                "status": "editing",
+                "generated_at": imported_at,
+                "editable_until": imported_at,
+                "updated_at": imported_at,
+            }},
+        )
+    else:
+        await db.daily_diaries.insert_one({
+            "userId": uid,
+            "date_label": data.date_label,
+            "fragment_ids": result.inserted_ids,
+            "draft_content": draft_content,
+            "status": "editing",
+            "generated_at": imported_at,
+            "editable_until": imported_at,
+            "created_at": imported_at,
+            "updated_at": imported_at,
+        })
+
+    analysis = await finalize_daily_diary(
+        uid,
+        data.date_label,
+        draft_content,
+        auto=True,
+        emit_notifications=False,
+    )
+    return {
+        "date_label": data.date_label,
+        "fragment_count": len(prepared_fragments),
+        "daily_content": draft_content,
+        "analysis": analysis,
+    }
 
 
 # ──────────────────────────────────────────

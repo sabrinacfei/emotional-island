@@ -352,17 +352,25 @@ function getSafeFirstDow(year: number, month: number) {
   return Number.isFinite(dow) && dow >= 0 && dow <= 6 ? dow : 0;
 }
 
-function getMonthWeekCount(_year: number, _month: number) {
-  return 4;
+function getMonthWeekRanges(year: number, month: number) {
+  const lastDay = getSafeDaysInMonth(year, month);
+  const firstDow = getSafeFirstDow(year, month);
+  const firstMonday = 1 + ((8 - firstDow) % 7);
+  const ranges = [];
+  for (let startDay = firstMonday; startDay + 6 <= lastDay; startDay += 7) {
+    ranges.push({ startDay, endDay: startDay + 6, lastDay });
+  }
+  return ranges.length ? ranges : [{ startDay: 1, endDay: lastDay, lastDay }];
+}
+
+function getMonthWeekCount(year: number, month: number) {
+  return getMonthWeekRanges(year, month).length;
 }
 
 function getMonthWeekRange(year: number, month: number, week: number) {
-  const safeWeek = Math.max(1, Math.min(4, Number.isFinite(week) ? week : 1));
-  const lastDay = getSafeDaysInMonth(year, month);
-  if (safeWeek === 1) return { startDay: 1, endDay: Math.min(7, lastDay), lastDay };
-  if (safeWeek === 2) return { startDay: 8, endDay: Math.min(14, lastDay), lastDay };
-  if (safeWeek === 3) return { startDay: 15, endDay: Math.min(21, lastDay), lastDay };
-  return { startDay: Math.min(22, lastDay), endDay: lastDay, lastDay };
+  const ranges = getMonthWeekRanges(year, month);
+  const safeWeek = Math.max(1, Math.min(ranges.length, Number.isFinite(week) ? week : 1));
+  return ranges[safeWeek - 1];
 }
 
 function getDateKey(year: number, month: number, day: number) {
