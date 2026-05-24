@@ -41,7 +41,30 @@ curl https://<your-api-domain>/health
 {"ok":true,"service":"emotional-island-api"}
 ```
 
-重要：App 關閉後的晚上整理與推播，依靠後端持續執行 `daily_scheduler_loop`。Render 免費服務可能休眠，因此不保證 21:00 準時執行；正式使用請選擇常駐方案，或增加可靠的雲端排程服務定時喚醒/觸發後端。
+重要：App 關閉後的晚上整理與推播，依靠後端持續執行 `daily_scheduler_loop`。Render 免費服務可能休眠，因此本專案另外提供免費 GitHub Actions 喚醒方式。
+
+## 免費排程喚醒 Render
+
+不購買 Render 方案時，使用 `.github/workflows/wake-daily-diary.yml` 呼叫受密鑰保護的 `/tasks/daily-diary/run`。它在台灣時間 18:33 至隔日 02:03 間每 10 分鐘觸發，涵蓋 App 可選的 19:00 至 23:59 整理時間與最長 120 分鐘修改期限。
+
+1. 自行產生一段長而隨機的密鑰，例如密碼管理器產生的隨機字串。
+2. 在 Render 的 `emotional-island-api` 服務打開 `Environment`，新增：
+
+```env
+CRON_SECRET=<your-long-random-secret>
+```
+
+3. 到 GitHub repository 的 `Settings > Secrets and variables > Actions > New repository secret`，新增：
+
+```text
+Name: DAILY_DIARY_CRON_SECRET
+Secret: 與 Render 的 CRON_SECRET 完全相同的值
+```
+
+4. 重新部署 Render，使新版 `/tasks/daily-diary/run` 上線。
+5. 到 GitHub `Actions > Wake daily diary scheduler > Run workflow` 手動測試一次。
+
+成功時 Actions log 會收到包含 `ok: true` 的 JSON。這是零額外付費的展示方案，但 GitHub 官方說明 scheduled workflow 在高負載時可能延遲，所以自動統整可能比設定時間晚幾分鐘，不適合需要精確到分鐘的正式醫療或高風險服務。
 
 ## App 連接雲端 API
 

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager, suppress
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 import bcrypt
+import hmac
 import jwt
 import os
 import asyncio
@@ -33,6 +34,7 @@ DEFAULT_DAILY_SETTINGS = {
     "edit_window_minutes": 30,
 }
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 mongo_client = AsyncIOMotorClient(MONGODB_URL)
 db = mongo_client[DATABASE_NAME]
@@ -117,6 +119,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(b
         return ObjectId(user_id)
     except Exception:
         raise HTTPException(status_code=401, detail="無效的使用者 ID")
+
+def require_cron_secret(x_cron_secret: Optional[str] = Header(default=None)) -> None:
+    if not CRON_SECRET:
+        raise HTTPException(status_code=503, detail="排程密鑰尚未設定")
+    if not x_cron_secret or not hmac.compare_digest(x_cron_secret, CRON_SECRET):
+        raise HTTPException(status_code=401, detail="無效的排程密鑰")
 
 def json_ready(value: Any) -> Any:
     if isinstance(value, ObjectId):
@@ -745,18 +753,33 @@ async def build_context_notifications(uid: ObjectId):
                 f"week-ready:{local_now.year}-{local_now.month:02d}-{week_no}",
             )
 
+async def run_due_daily_jobs() -> dict:
+    users = await db.users.find({}, {"_id": 1}).to_list(500)
+    local_now = datetime.now(APP_TZ)
+    labels = {
+        local_now.strftime("%Y-%m-%d"),
+        (local_now - timedelta(days=1)).strftime("%Y-%m-%d"),
+    }
+    checked = 0
+    for user in users:
+        uid = user["_id"]
+        for date_label in labels:
+            checked += 1
+            await process_daily_for_user(uid, date_label)
+        try:
+            await build_context_notifications(uid)
+        except Exception as e:
+            print(f"[警告] 背景通知建立失敗 user={uid}: {e}")
+    return {
+        "ok": True,
+        "users_checked": len(users),
+        "dates_checked": checked,
+        "run_at": local_now.isoformat(),
+    }
+
 async def daily_scheduler_loop():
     while True:
-        users = await db.users.find({}, {"_id": 1}).to_list(500)
-        local_now = datetime.now(APP_TZ)
-        labels = {
-            local_now.strftime("%Y-%m-%d"),
-            (local_now - timedelta(days=1)).strftime("%Y-%m-%d"),
-        }
-        for user in users:
-            uid = user["_id"]
-            for date_label in labels:
-                await process_daily_for_user(uid, date_label)
+        await run_due_daily_jobs()
         await asyncio.sleep(60)
 
 
@@ -800,6 +823,10 @@ app.add_middleware(
 @app.get("/health")
 async def health_check():
     return {"ok": True, "service": "emotional-island-api"}
+
+@app.post("/tasks/daily-diary/run")
+async def trigger_due_daily_jobs(_: None = Depends(require_cron_secret)):
+    return await run_due_daily_jobs()
 
 
 # ──────────────────────────────────────────
