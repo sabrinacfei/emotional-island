@@ -99,7 +99,7 @@ for u in USERS_DATA:
     user_doc = {
         "username": u["username"],
         "email": u["email"],
-        "hashed_password": hashed_pwd,
+        "password_hash": hashed_pwd,
         "created_at": datetime.now(timezone.utc)
     }
     uid = db.users.insert_one(user_doc).inserted_id
@@ -119,19 +119,35 @@ for u in USERS_DATA:
         analysis = {
             "userId": uid,
             "conversationId": cid,
+
+            # 給 App 判斷這是一篇「每日完整日記」
+            "date_label": date_str,
+            "analysis_type": "daily",
+
+            # 這兩個是點進去「當天完整日記」要顯示的內容
+            "daily_content": day["diary"],
+            "final_content": day["diary"],
+
+            # 情緒分析資料
             "scores": {k: v/100 for k, v in day["emotions"].items()},
             "emotions_raw": day["emotions"],
             "dominant_emotions": day["dominant_emotions"],
             "risk_level": day["risk_level"],
             "emotional_intensity": day["emotional_intensity"],
+
+            # 今日小語 / 分析摘要
             "analysis_notes": day["analysis_notes"],
+            "one_line_summary": day["one_line_summary"],
+            "summary": day["one_line_summary"],
+
+            # 標籤
             "stressor_tags": day["stressor_tags"],
             "buffer_tags": day["buffer_tags"],
             "joy_tags": day["joy_tags"],
-            "one_line_summary": day["one_line_summary"],
-            "summary": day["analysis_notes"],
+
             "analyzed_at": ts
         }
+
         db.emotion_analyses.insert_one(analysis)
 
         existing = db.emotion_trends.find_one({"userId": uid, "date_label": date_str})
