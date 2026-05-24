@@ -14,6 +14,7 @@ import jwt
 import os
 import asyncio
 import json
+import re
 import urllib.request
 import urllib.error
 from dotenv import load_dotenv
@@ -61,6 +62,10 @@ class UserResponse(BaseModel):
     created_at: datetime
     avatar: Optional[str] = None
     onboarding_seen: Optional[bool] = None
+    birth_date: Optional[str] = None
+    phone: Optional[str] = None
+    identity_completed: Optional[bool] = None
+    push_enabled: Optional[bool] = None
 
 class CreateAnalysisInput(BaseModel):
     conversation_id: str = Field(alias="conversationId")
@@ -86,6 +91,22 @@ class PushTokenInput(BaseModel):
     platform: Optional[str] = None
     device_id: Optional[str] = None
 
+class ChangeEmailInput(BaseModel):
+    new_email: EmailStr
+    password: str
+
+class ChangePasswordInput(BaseModel):
+    current_password: str
+    new_password: str
+
+class VerifyPasswordInput(BaseModel):
+    password: str
+
+class ResetPasswordByPhoneInput(BaseModel):
+    email: EmailStr
+    phone: str
+    new_password: str
+
 
 # ──────────────────────────────────────────
 # 工具函式
@@ -96,6 +117,40 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode(), hashed.encode())
+
+def normalize_email(email: str) -> str:
+    return str(email).strip().lower()
+
+def validate_account_email(email: str) -> str:
+    normalized = normalize_email(email)
+    if not normalized.endswith("@test.com"):
+        raise HTTPException(status_code=400, detail="請使用 @test.com")
+    return normalized
+
+def validate_account_password(password: str) -> str:
+    if (
+        len(password) < 8
+        or not re.search(r"[A-Z]", password)
+        or not re.search(r"[a-z]", password)
+        or not re.search(r"\d", password)
+    ):
+        raise HTTPException(status_code=400, detail="密碼至少8位（包含英文、數字、大寫、小寫）")
+    return password
+
+def normalize_phone(phone: str) -> str:
+    normalized = re.sub(r"[\s\-()]", "", str(phone or ""))
+    if not re.fullmatch(r"09\d{8}", normalized):
+        raise HTTPException(status_code=400, detail="請輸入有效手機號碼（例如 0912345678）")
+    return normalized
+
+def validate_birth_date(value: str) -> str:
+    try:
+        birthday = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="出生年月日格式需為 YYYY-MM-DD")
+    if birthday > datetime.now(APP_TZ).date():
+        raise HTTPException(status_code=400, detail="出生年月日不可晚於今天")
+    return birthday.isoformat()
 
 def create_token(user_id: str) -> str:
     payload = {
@@ -345,6 +400,49 @@ async def record_achievement(uid: ObjectId, key: str, increment: int = 1) -> Opt
         popup["_id"] = result.inserted_id
         return popup
     return None
+
+async def ensure_profile_notifications(uid: ObjectId) -> None:
+    user = await db.users.find_one({"_id": uid})
+    if not user:
+        return
+    if not user.get("birth_date") or not user.get("phone"):
+        await create_notification(
+            uid,
+            "IDENTITY_INCOMPLETE",
+            "還沒綁定身份嗎？",
+            "快去完成綁定吧！補上生日與手機後，也能收到生日祝福與使用手機找回密碼。",
+            "完成個人資料",
+            "PersonalInfoScreen",
+            {},
+            "identity-incomplete",
+        )
+    birthday = user.get("birth_date")
+    local_now = datetime.now(APP_TZ)
+    if not birthday or birthday[5:] != local_now.strftime("%m-%d"):
+        return
+    year = local_now.year
+    await create_notification(
+        uid,
+        "BIRTHDAY_GREETING",
+        "生日快樂！",
+        "今天是屬於你的日子。小島精靈祝你生日快樂，願你的心情被溫柔照顧。",
+        "回到小島",
+        "HomeScreen",
+        {},
+        f"birthday-greeting:{year}",
+    )
+    popup_key = f"birthday-popup:{year}"
+    exists = await db.achievement_popups.find_one({"userId": uid, "dedup_key": popup_key})
+    if not exists:
+        await db.achievement_popups.insert_one({
+            "userId": uid,
+            "key": "birthday",
+            "title": "生日快樂",
+            "asset": "HBD.png",
+            "dedup_key": popup_key,
+            "read": False,
+            "created_at": datetime.now(timezone.utc),
+        })
 
 async def get_daily_settings_doc(uid: ObjectId) -> dict:
     doc = await db.daily_diary_settings.find_one({"userId": uid})
@@ -642,7 +740,39 @@ async def process_daily_for_user(uid: ObjectId, date_label: str):
     except Exception as e:
         print(f"[警告] 每日統整排程失敗 user={uid} date={date_label}: {e}")
 
+async def create_hourly_diary_reminder(uid: ObjectId, local_now: Optional[datetime] = None) -> bool:
+    """At each completed local hour, remind once if no fragment was written."""
+    current_local = local_now or datetime.now(APP_TZ)
+    hour_end = current_local.replace(minute=0, second=0, microsecond=0)
+    hour_start = hour_end - timedelta(hours=1)
+    user = await db.users.find_one({"_id": uid}, {"created_at": 1})
+    created_at = as_aware_utc(user.get("created_at")) if user else None
+    if created_at and created_at >= hour_end.astimezone(timezone.utc):
+        return False
+    has_fragment = await db.conversations.find_one({
+        "userId": uid,
+        "type": "fragment",
+        "timestamp": {
+            "$gte": hour_start.astimezone(timezone.utc),
+            "$lt": hour_end.astimezone(timezone.utc),
+        },
+    })
+    if has_fragment:
+        return False
+    notification = await create_notification(
+        uid,
+        "HOURLY_DIARY_REMINDER",
+        "想和小島精靈說說話嗎？",
+        "今天有什麼事情可以跟我分享的嗎？快來紀錄吧！",
+        "寫一則小日記",
+        "DiaryScreen",
+        {},
+        f"hourly-no-diary:{hour_start.strftime('%Y-%m-%d-%H')}",
+    )
+    return notification is not None
+
 async def build_context_notifications(uid: ObjectId):
+    await ensure_profile_notifications(uid)
     local_now = datetime.now(APP_TZ)
     date_label = local_now.strftime("%Y-%m-%d")
     settings = await get_daily_settings_doc(uid)
@@ -761,12 +891,15 @@ async def run_due_daily_jobs() -> dict:
         (local_now - timedelta(days=1)).strftime("%Y-%m-%d"),
     }
     checked = 0
+    hourly_reminders = 0
     for user in users:
         uid = user["_id"]
         for date_label in labels:
             checked += 1
             await process_daily_for_user(uid, date_label)
         try:
+            if await create_hourly_diary_reminder(uid, local_now):
+                hourly_reminders += 1
             await build_context_notifications(uid)
         except Exception as e:
             print(f"[警告] 背景通知建立失敗 user={uid}: {e}")
@@ -774,6 +907,7 @@ async def run_due_daily_jobs() -> dict:
         "ok": True,
         "users_checked": len(users),
         "dates_checked": checked,
+        "hourly_reminders_created": hourly_reminders,
         "run_at": local_now.isoformat(),
     }
 
@@ -835,31 +969,44 @@ async def trigger_due_daily_jobs(_: None = Depends(require_cron_secret)):
 
 @app.post("/register", status_code=201)
 async def register(data: RegisterInput):
-    existing = await db.users.find_one({"email": data.email})
+    email = validate_account_email(str(data.email))
+    validate_account_password(data.password)
+    existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="此 Email 已被註冊")
     user_doc = {
         "username": data.username,
-        "email": data.email,
+        "email": email,
         "password_hash": hash_password(data.password),
         "avatar": "boy",
         "onboarding_seen": False,
+        "identity_completed": False,
         "created_at": datetime.now(timezone.utc)
     }
     result = await db.users.insert_one(user_doc)
+    await create_notification(
+        result.inserted_id,
+        "IDENTITY_INCOMPLETE",
+        "還沒綁定身份嗎？",
+        "快去完成綁定吧！補上生日與手機後，也能收到生日祝福與使用手機找回密碼。",
+        "完成個人資料",
+        "PersonalInfoScreen",
+        {},
+        "identity-incomplete",
+    )
     token = create_token(str(result.inserted_id))
     return {
         "message": "註冊成功",
         "token": token,
-        "user": {"id": str(result.inserted_id), "username": data.username, "email": data.email, "avatar": "boy", "onboarding_seen": False}
+        "user": {"id": str(result.inserted_id), "username": data.username, "email": email, "avatar": "boy", "onboarding_seen": False}
     }
 
 
 @app.post("/login")
 async def login(data: LoginInput):
-    user = await db.users.find_one({"email": data.email})
+    user = await db.users.find_one({"email": normalize_email(str(data.email))})
     if not user or not verify_password(data.password, user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Email 或密碼錯誤")
+        raise HTTPException(status_code=401, detail="帳號密碼錯誤")
     token = create_token(str(user["_id"]))
     return {
         "token": token,
@@ -876,10 +1023,26 @@ async def update_profile(data: dict, uid: ObjectId = Depends(get_current_user)):
         allowed["avatar"] = str(data["avatar"]).strip()
     if "onboarding_seen" in data:
         allowed["onboarding_seen"] = bool(data["onboarding_seen"])
+    if "birth_date" in data:
+        allowed["birth_date"] = validate_birth_date(str(data["birth_date"]))
+    if "phone" in data:
+        allowed["phone"] = normalize_phone(str(data["phone"]))
     if not allowed:
         raise HTTPException(status_code=400, detail="沒有可更新的欄位")
+    if "birth_date" in allowed or "phone" in allowed:
+        current = await db.users.find_one({"_id": uid})
+        allowed["identity_completed"] = bool(
+            allowed.get("birth_date", current.get("birth_date"))
+            and allowed.get("phone", current.get("phone"))
+        )
     allowed["updated_at"] = datetime.now(timezone.utc)
     await db.users.update_one({"_id": uid}, {"$set": allowed})
+    if allowed.get("identity_completed"):
+        await db.notifications.update_many(
+            {"userId": uid, "type": "IDENTITY_INCOMPLETE"},
+            {"$set": {"dismissed": True, "read": True, "dismissed_at": datetime.now(timezone.utc)}},
+        )
+        await ensure_profile_notifications(uid)
     user = await db.users.find_one({"_id": uid})
     out = serialize_doc(user)
     out.pop("password_hash", None)
@@ -892,6 +1055,51 @@ async def get_me(uid: ObjectId = Depends(get_current_user)):
     if not user:
         raise HTTPException(status_code=404, detail="找不到使用者")
     return serialize_doc(user)
+
+@app.post("/me/change-email")
+async def change_email(data: ChangeEmailInput, uid: ObjectId = Depends(get_current_user)):
+    user = await db.users.find_one({"_id": uid})
+    if not user or not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="密碼錯誤")
+    email = validate_account_email(str(data.new_email))
+    existing = await db.users.find_one({"email": email, "_id": {"$ne": uid}})
+    if existing:
+        raise HTTPException(status_code=400, detail="此帳號已被使用")
+    await db.users.update_one({"_id": uid}, {"$set": {"email": email, "updated_at": datetime.now(timezone.utc)}})
+    return {"ok": True, "email": email}
+
+@app.post("/me/change-password")
+async def change_password(data: ChangePasswordInput, uid: ObjectId = Depends(get_current_user)):
+    user = await db.users.find_one({"_id": uid})
+    if not user or not verify_password(data.current_password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="原密碼錯誤")
+    validate_account_password(data.new_password)
+    await db.users.update_one(
+        {"_id": uid},
+        {"$set": {"password_hash": hash_password(data.new_password), "updated_at": datetime.now(timezone.utc)}},
+    )
+    return {"ok": True}
+
+@app.post("/me/verify-password")
+async def verify_current_password(data: VerifyPasswordInput, uid: ObjectId = Depends(get_current_user)):
+    user = await db.users.find_one({"_id": uid})
+    if not user or not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="原密碼錯誤")
+    return {"ok": True}
+
+@app.post("/password/reset-by-phone")
+async def reset_password_by_phone(data: ResetPasswordByPhoneInput):
+    email = normalize_email(str(data.email))
+    phone = normalize_phone(data.phone)
+    validate_account_password(data.new_password)
+    user = await db.users.find_one({"email": email, "phone": phone})
+    if not user:
+        raise HTTPException(status_code=400, detail="帳號或綁定手機不符")
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password_hash": hash_password(data.new_password), "updated_at": datetime.now(timezone.utc)}},
+    )
+    return {"ok": True, "message": "密碼已重新設定，請使用新密碼登入"}
 
 @app.post("/push-token")
 async def register_push_token(data: PushTokenInput, uid: ObjectId = Depends(get_current_user)):

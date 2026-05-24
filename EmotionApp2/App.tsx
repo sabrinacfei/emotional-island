@@ -118,6 +118,7 @@ const ACHIEVEMENT_ASSETS: Record<string, any> = {
   watering: require('./assets/water.png'),
   growing: require('./assets/growing.png'),
   self_care: require('./assets/Self-care.png'),
+  birthday: require('./assets/HBD.png'),
 };
 const ACHIEVEMENT_META: Record<string, { label: string; img: any; unit: string }> = {
   first_planting: { label: '初次種植', img: require('./assets/First＿planting.png'), unit: '次' },
@@ -853,6 +854,37 @@ function WelcomeScreen({ onStart, onLogin }: any) {
 // ─────────────────────────────────────────────────────────
 // LoginScreen
 // ─────────────────────────────────────────────────────────
+function PasswordField({ value, onChangeText, placeholder, error }: any) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <View style={s.loginFieldWrap}>
+      <View style={s.secretField}>
+        <TextInput
+          style={s.secretInput}
+          placeholder={placeholder}
+          placeholderTextColor={C.muted}
+          value={value}
+          onChangeText={onChangeText}
+          secureTextEntry={!visible}
+          autoCapitalize="none"
+        />
+        <TouchableOpacity style={s.eyeBtn} onPress={() => setVisible(v => !v)}>
+          <Text style={s.eyeText}>{visible ? '◉' : '◎'}</Text>
+        </TouchableOpacity>
+      </View>
+      {!!error && <Text style={s.fieldError}>*{error}</Text>}
+    </View>
+  );
+}
+
+function isTestAccount(value: string) {
+  return value.trim().toLowerCase().endsWith('@test.com');
+}
+
+function isStrongPassword(value: string) {
+  return value.length >= 8 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /\d/.test(value);
+}
+
 function LoginScreen({ mode, setMode, onLoggedIn }: any) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -860,29 +892,66 @@ function LoginScreen({ mode, setMode, onLoggedIn }: any) {
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
   const [regConfirm, setRegConfirm] = useState('');
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotPhone, setForgotPhone] = useState('');
+  const [forgotPassword, setForgotPassword] = useState('');
+  const [forgotConfirm, setForgotConfirm] = useState('');
+  const [loginErrors, setLoginErrors] = useState<Record<string, string>>({});
+  const [regErrors, setRegErrors] = useState<Record<string, string>>({});
+  const [forgotErrors, setForgotErrors] = useState<Record<string, string>>({});
   const [authLoading, setAuthLoading] = useState(false);
 
   const handleLogin = async () => {
-    if (!email.trim() || !password.trim()) { Alert.alert('請填寫 Email 和密碼'); return; }
+    setLoginErrors({});
+    if (!isTestAccount(email)) { setLoginErrors({ email: '請使用 @test.com' }); return; }
+    if (!password.trim()) { setLoginErrors({ password: '請輸入密碼' }); return; }
     setAuthLoading(true);
     try {
       const res = await fetch(`${BASE_URL}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: email.trim(), password }) });
       const data = await res.json();
       if (res.ok) onLoggedIn(data.token, data.user.username, false, data.user.avatar, data.user.onboarding_seen);
-      else Alert.alert('登入失敗', data.detail || '請確認帳號密碼');
+      else setLoginErrors({ email: '帳號密碼錯誤', password: '帳號密碼錯誤' });
     } catch { Alert.alert('無法連接到後端伺服器'); } finally { setAuthLoading(false); }
   };
 
   const handleRegister = async () => {
-    if (!regUsername.trim() || !regEmail.trim() || !regPassword.trim()) { Alert.alert('請填寫所有欄位'); return; }
-    if (regPassword !== regConfirm) { Alert.alert('密碼不一致'); return; }
-    if (regPassword.length < 6) { Alert.alert('密碼至少 6 個字元'); return; }
+    const errors: Record<string, string> = {};
+    if (!regUsername.trim()) errors.username = '請輸入暱稱';
+    if (!isTestAccount(regEmail)) errors.email = '請使用 @test.com';
+    if (!isStrongPassword(regPassword)) errors.password = '至少8位（包含英文、數字、大寫、小寫）';
+    if (regPassword !== regConfirm) errors.confirm = '兩次輸入的密碼不一致';
+    setRegErrors(errors);
+    if (Object.keys(errors).length) return;
     setAuthLoading(true);
     try {
       const res = await fetch(`${BASE_URL}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: regUsername.trim(), email: regEmail.trim(), password: regPassword }) });
       const data = await res.json();
       if (res.ok) onLoggedIn(data.token, data.user.username, true, data.user.avatar, data.user.onboarding_seen);
-      else Alert.alert('註冊失敗', data.detail || '請稍後再試');
+      else setRegErrors({ email: data.detail || '註冊失敗' });
+    } catch { Alert.alert('無法連接到後端伺服器'); } finally { setAuthLoading(false); }
+  };
+
+  const handleForgotPassword = async () => {
+    const errors: Record<string, string> = {};
+    if (!isTestAccount(forgotEmail)) errors.email = '請使用 @test.com';
+    if (!/^09\d{8}$/.test(forgotPhone.replace(/[\s-]/g, ''))) errors.phone = '請輸入綁定手機號碼';
+    if (!isStrongPassword(forgotPassword)) errors.password = '至少8位（包含英文、數字、大寫、小寫）';
+    if (forgotPassword !== forgotConfirm) errors.confirm = '兩次輸入的密碼不一致';
+    setForgotErrors(errors);
+    if (Object.keys(errors).length) return;
+    setAuthLoading(true);
+    try {
+      const res = await fetch(`${BASE_URL}/password/reset-by-phone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail.trim(), phone: forgotPhone.trim(), new_password: forgotPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setForgotErrors({ phone: data.detail || '帳號或綁定手機不符' }); return; }
+      Alert.alert('密碼已更新', '請使用新密碼登入。');
+      setEmail(forgotEmail.trim());
+      setPassword('');
+      setMode('login');
     } catch { Alert.alert('無法連接到後端伺服器'); } finally { setAuthLoading(false); }
   };
 
@@ -898,16 +967,53 @@ function LoginScreen({ mode, setMode, onLoggedIn }: any) {
             <Text style={s.loginSubtitle}>開始你的心情小島旅程</Text>
           </View>
           <View style={s.loginForm}>
-            <TextInput style={s.loginInput} placeholder="暱稱" placeholderTextColor={C.muted} value={regUsername} onChangeText={setRegUsername} />
-            <TextInput style={s.loginInput} placeholder="電子郵件" placeholderTextColor={C.muted} value={regEmail} onChangeText={setRegEmail} autoCapitalize="none" keyboardType="email-address" />
-            <TextInput style={s.loginInput} placeholder="密碼" placeholderTextColor={C.muted} value={regPassword} onChangeText={setRegPassword} secureTextEntry />
-            <TextInput style={s.loginInput} placeholder="確認密碼" placeholderTextColor={C.muted} value={regConfirm} onChangeText={setRegConfirm} secureTextEntry />
+            <View style={s.loginFieldWrap}>
+              <TextInput style={s.loginInput} placeholder="暱稱" placeholderTextColor={C.muted} value={regUsername} onChangeText={v => { setRegUsername(v); setRegErrors(e => ({ ...e, username: '' })); }} />
+              {!!regErrors.username && <Text style={s.fieldError}>*{regErrors.username}</Text>}
+            </View>
+            <View style={s.loginFieldWrap}>
+              <TextInput style={s.loginInput} placeholder="帳號（例如 ming@test.com）" placeholderTextColor={C.muted} value={regEmail} onChangeText={v => { setRegEmail(v); setRegErrors(e => ({ ...e, email: '' })); }} autoCapitalize="none" keyboardType="email-address" />
+              {!!regErrors.email && <Text style={s.fieldError}>*{regErrors.email}</Text>}
+            </View>
+            <PasswordField value={regPassword} placeholder="密碼" onChangeText={(v: string) => { setRegPassword(v); setRegErrors(e => ({ ...e, password: '' })); }} error={regErrors.password} />
+            <PasswordField value={regConfirm} placeholder="確認密碼" onChangeText={(v: string) => { setRegConfirm(v); setRegErrors(e => ({ ...e, confirm: '' })); }} error={regErrors.confirm} />
           </View>
           <TouchableOpacity style={s.loginBtn} onPress={handleRegister} disabled={authLoading}>
             {authLoading ? <ActivityIndicator color="white" /> : <Text style={s.loginBtnText}>立即註冊</Text>}
           </TouchableOpacity>
           <TouchableOpacity style={s.registerSwitch} onPress={() => setMode('login')}>
             <Text style={s.smallHint}>已有帳號？ <Text style={s.greenText}>登入</Text></Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </ScreenBg>
+    );
+  }
+
+  if (mode === 'forgot') {
+    return (
+      <ScreenBg source={require('./assets/login.png')}>
+        <ScrollView contentContainerStyle={s.loginScroll} keyboardShouldPersistTaps="handled">
+          <TouchableOpacity style={s.loginBackCircle} onPress={() => setMode('login')}>
+            <Image source={require('./assets/return.png')} style={{ width: 20, height: 20 }} resizeMode="contain" />
+          </TouchableOpacity>
+          <View style={s.loginHeader}>
+            <Text style={s.loginTitle}>重新設定密碼</Text>
+            <Text style={s.loginSubtitle}>使用已綁定的手機確認身份</Text>
+          </View>
+          <View style={s.loginForm}>
+            <View style={s.loginFieldWrap}>
+              <TextInput style={s.loginInput} placeholder="帳號（例如 ming@test.com）" placeholderTextColor={C.muted} value={forgotEmail} onChangeText={v => { setForgotEmail(v); setForgotErrors(e => ({ ...e, email: '' })); }} autoCapitalize="none" keyboardType="email-address" />
+              {!!forgotErrors.email && <Text style={s.fieldError}>*{forgotErrors.email}</Text>}
+            </View>
+            <View style={s.loginFieldWrap}>
+              <TextInput style={s.loginInput} placeholder="綁定手機號碼" placeholderTextColor={C.muted} value={forgotPhone} onChangeText={v => { setForgotPhone(v); setForgotErrors(e => ({ ...e, phone: '' })); }} keyboardType="phone-pad" />
+              {!!forgotErrors.phone && <Text style={s.fieldError}>*{forgotErrors.phone}</Text>}
+            </View>
+            <PasswordField value={forgotPassword} placeholder="新密碼" onChangeText={(v: string) => { setForgotPassword(v); setForgotErrors(e => ({ ...e, password: '' })); }} error={forgotErrors.password} />
+            <PasswordField value={forgotConfirm} placeholder="再次輸入新密碼" onChangeText={(v: string) => { setForgotConfirm(v); setForgotErrors(e => ({ ...e, confirm: '' })); }} error={forgotErrors.confirm} />
+          </View>
+          <TouchableOpacity style={s.loginBtn} onPress={handleForgotPassword} disabled={authLoading}>
+            {authLoading ? <ActivityIndicator color="white" /> : <Text style={s.loginBtnText}>更新密碼</Text>}
           </TouchableOpacity>
         </ScrollView>
       </ScreenBg>
@@ -926,9 +1032,12 @@ function LoginScreen({ mode, setMode, onLoggedIn }: any) {
             <Text style={s.loginSubtitle}>登入你的心情小島</Text>
           </View>
           <View style={s.loginForm}>
-            <TextInput style={s.loginInput} placeholder="電子郵件" placeholderTextColor={C.muted} value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
-            <TextInput style={s.loginInput} placeholder="密碼" placeholderTextColor={C.muted} value={password} onChangeText={setPassword} secureTextEntry />
-            <TouchableOpacity style={s.forgotBtn}><Text style={s.forgotText}>忘記密碼？</Text></TouchableOpacity>
+            <View style={s.loginFieldWrap}>
+              <TextInput style={s.loginInput} placeholder="帳號" placeholderTextColor={C.muted} value={email} onChangeText={v => { setEmail(v); setLoginErrors(e => ({ ...e, email: '' })); }} autoCapitalize="none" keyboardType="email-address" />
+              {!!loginErrors.email && <Text style={s.fieldError}>*{loginErrors.email}</Text>}
+            </View>
+            <PasswordField value={password} placeholder="密碼" onChangeText={(v: string) => { setPassword(v); setLoginErrors(e => ({ ...e, password: '' })); }} error={loginErrors.password} />
+            <TouchableOpacity style={s.forgotBtn} onPress={() => setMode('forgot')}><Text style={s.forgotText}>忘記密碼？</Text></TouchableOpacity>
           </View>
           <TouchableOpacity style={s.loginBtn} onPress={handleLogin} disabled={authLoading}>
             {authLoading ? <ActivityIndicator color="white" /> : <Text style={s.loginBtnText}>登入</Text>}
@@ -1181,6 +1290,7 @@ function HomeScreen({ navigation }: any) {
   const [todayStatus, setTodayStatus] = useState<any>(null);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [birthdayPopup, setBirthdayPopup] = useState<any>(null);
 
   useEffect(() => { const unsub = navigation.addListener('focus', () => { fetchTrees(); fetchNotifications(); }); return unsub; }, [navigation, token]);
   useEffect(() => { if (token) { fetchTrees(); fetchNotifications(); } }, [token]);
@@ -1205,6 +1315,17 @@ const safeJson = async (res: Response) => {
   }
 };
 
+  const fetchBirthdayPopup = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${BASE_URL}/achievements`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await safeJson(res);
+      if (res.ok) {
+        setBirthdayPopup((Array.isArray(data?.popups) ? data.popups : []).find((popup: any) => popup.key === 'birthday') || null);
+      }
+    } catch (e) { console.error(e); }
+  };
+
   const fetchNotifications = async () => {
     if (!token) return;
 
@@ -1226,6 +1347,7 @@ const safeJson = async (res: Response) => {
       if (res.ok && data) {
         setNotifications(Array.isArray(data?.notifications) ? data.notifications : []);
         setUnreadCount(Number(data?.unread_count || 0));
+        await fetchBirthdayPopup();
       } else {
         console.log('notifications failed:', res.status, data);
         setNotifications([]);
@@ -1284,8 +1406,22 @@ const safeJson = async (res: Response) => {
       rec ? navigation.navigate('DayAnalysis', { date: rec.date, record: rec }) : navigation.navigate('MainTabs', { screen: 'TrendTab' });
     } else if (target === 'WeeklyAnalysisScreen') navigation.navigate('WeeklyAnalysis', params);
     else if (target === 'FavoritesScreen') navigation.navigate('Favorites');
+    else if (target === 'PersonalInfoScreen') navigation.navigate('PersonalInfo');
+    else if (target === 'HomeScreen') setNoticeOpen(false);
     else if (target === 'SupportResourceScreen') Alert.alert('支持資源', '1925 安心專線\n1980 生命線\n如果你現在有傷害自己的念頭，請立刻聯絡身邊可信任的人或當地緊急服務。');
     else navigation.navigate('MainTabs', { screen: 'TrendTab' });
+  };
+
+  const dismissBirthdayPopup = async () => {
+    if (!birthdayPopup?.id) return setBirthdayPopup(null);
+    try {
+      await fetch(`${BASE_URL}/achievements/read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ids: [birthdayPopup.id] }),
+      });
+    } catch (e) { console.error(e); }
+    setBirthdayPopup(null);
   };
 
   return (
@@ -1365,6 +1501,7 @@ const safeJson = async (res: Response) => {
           </View>
         </View>
       </Modal>
+      {birthdayPopup && <AchievementPopup popup={birthdayPopup} onClose={dismissBirthdayPopup} />}
     </View>
   );
 }
@@ -2027,10 +2164,7 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
 }
 
 function ProfileScreen({ navigation }: any) {
-  const { token, username, avatar, setUsername, setAvatar, logout } = useContext(AuthContext);
-  const [editName, setEditName] = useState(username);
-  const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const { token, username, avatar, setAvatar } = useContext(AuthContext);
   const [records, setRecords] = useState<TreeRecord[]>([]);
   const [favorites, setFavorites] = useState<any[]>([]);
   const [achievements, setAchievements] = useState<any[]>([]);
@@ -2043,7 +2177,6 @@ function ProfileScreen({ navigation }: any) {
   const [avatarModalVisible, setAvatarModalVisible] = useState(false);
   const [testingNotification, setTestingNotification] = useState(false);
 
-  useEffect(() => { setEditName(username); }, [username]);
   useEffect(() => {
     setDraftGenerateTime(settings.generate_time);
     setDraftWindow(String(settings.edit_window_minutes));
@@ -2126,17 +2259,6 @@ function ProfileScreen({ navigation }: any) {
 
   const chooseAvatar = async (key: string) => { setAvatar(key); setAvatarModalVisible(false); };
 
-  const saveUsername = async () => {
-    if (!editName.trim()) return;
-    setSaving(true);
-    try {
-      const res = await fetch(`${BASE_URL}/me`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify({ username: editName.trim() }) });
-      const data = await res.json();
-      if (data.username) { setUsername(data.username); setEditing(false); }
-      else Alert.alert('儲存失敗');
-    } catch { Alert.alert('網路錯誤'); } finally { setSaving(false); }
-  };
-
   const overview = buildJourneyOverview(records);
   const days = new Set(records.map(r => r.date).filter(Boolean)).size;
   const achievementCount = (key: string) => achievements.find(a => a.key === key)?.count || 0;
@@ -2163,11 +2285,11 @@ function ProfileScreen({ navigation }: any) {
           <TouchableOpacity onPress={() => setAvatarModalVisible(true)} activeOpacity={0.85}>
             <Image source={getAvatarSource(avatar)} style={s.profileAvatarV2} resizeMode="cover" />
           </TouchableOpacity>
-          <View style={{ flex: 1, marginLeft: 14 }}>
+          <TouchableOpacity style={{ flex: 1, marginLeft: 14 }} onPress={() => navigation.navigate('PersonalInfo')} activeOpacity={0.78}>
             <Text style={s.profileNameV2}>{username || '小樹夥伴'} 🌱</Text>
             <Text style={s.profileSubV2}>與情緒共處的第 {days || 0} 天</Text>
             <View style={s.profilePillV2}><Image source={FEATURE_ASSETS.leaf} style={{ width: 14, height: 14 }} resizeMode="contain" /><Text style={s.profilePillText}>持續成長中</Text></View>
-          </View>
+          </TouchableOpacity>
         </View>
 
         <View style={s.profileStatsV2}>
@@ -2266,24 +2388,6 @@ function ProfileScreen({ navigation }: any) {
                 ? <ActivityIndicator color={C.accent} />
                 : <Text style={s.settingListValue}>傳送測試 ›</Text>}
             </TouchableOpacity>
-            <View style={s.settingAccountBox}>
-              <Text style={s.settingListTitle}>個人資料</Text>
-              {editing ? (
-                <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-                  <TextInput style={[s.authInput, { flex: 1, height: 48, marginBottom: 0 }]} value={editName} onChangeText={setEditName} />
-                  <TouchableOpacity style={[s.primaryBtn, { width: 82, height: 48, marginTop: 0 }]} onPress={saveUsername} disabled={saving}>
-                    {saving ? <ActivityIndicator color="white" /> : <Text style={[s.primaryBtnText, { fontSize: 14, letterSpacing: 1 }]}>儲存</Text>}
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                <TouchableOpacity onPress={() => setEditing(true)} style={[s.settingRow, { paddingVertical: 12 }]}>
-                  <Text style={s.body}>暱稱：{username}</Text><Text style={[s.body, { color: C.accent }]}>編輯</Text>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity style={s.logoutBtnV2} onPress={() => Alert.alert('確認登出', '確定要登出嗎？', [{ text: '取消', style: 'cancel' }, { text: '登出', style: 'destructive', onPress: logout }])}>
-                <Text style={[s.body, { color: C.danger }]}>登出</Text>
-              </TouchableOpacity>
-            </View>
             <TouchableOpacity style={s.avatarModalCancel} onPress={() => setSettingsOpen(false)} activeOpacity={0.85}>
               <Text style={s.avatarModalCancelText}>完成</Text>
             </TouchableOpacity>
@@ -2336,6 +2440,192 @@ function ProfileScreen({ navigation }: any) {
       </Modal>
       {activePopup && <AchievementPopup popup={activePopup} onClose={dismissPopup} />}
     </View>
+  );
+}
+
+function PersonalInfoScreen({ navigation }: any) {
+  const { token, username, setUsername, logout } = useContext(AuthContext);
+  const [profile, setProfile] = useState<any>(null);
+  const [name, setName] = useState(username);
+  const [birthDate, setBirthDate] = useState('');
+  const [phone, setPhone] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [emailPassword, setEmailPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [passwordVerified, setPasswordVerified] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [newConfirm, setNewConfirm] = useState('');
+  const [identityErrors, setIdentityErrors] = useState<Record<string, string>>({});
+  const [accountErrors, setAccountErrors] = useState<Record<string, string>>({});
+  const [passwordErrors, setPasswordErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState('');
+
+  const loadProfile = async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/me`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (!res.ok) return;
+      setProfile(data);
+      setName(data.username || username);
+      setBirthDate(data.birth_date || '');
+      setPhone(data.phone || '');
+      setNewEmail(data.email || '');
+    } catch { Alert.alert('網路錯誤', '目前無法取得個人資料。'); }
+  };
+
+  useEffect(() => { loadProfile(); }, [token]);
+
+  const saveIdentity = async () => {
+    const errors: Record<string, string> = {};
+    if (!name.trim()) errors.name = '請輸入暱稱';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate.trim())) errors.birth = '請使用 YYYY-MM-DD';
+    if (!/^09\d{8}$/.test(phone.replace(/[\s-]/g, ''))) errors.phone = '請輸入有效手機號碼';
+    setIdentityErrors(errors);
+    if (Object.keys(errors).length) return;
+    setSaving('identity');
+    try {
+      const res = await fetch(`${BASE_URL}/me`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ username: name.trim(), birth_date: birthDate.trim(), phone: phone.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) { Alert.alert('儲存失敗', data.detail || '請稍後再試'); return; }
+      setProfile(data);
+      setUsername(data.username);
+      Alert.alert('已完成綁定', '生日祝福與手機找回密碼已可使用。');
+    } catch { Alert.alert('網路錯誤', '目前無法儲存個人資料。'); } finally { setSaving(''); }
+  };
+
+  const changeEmail = async () => {
+    const errors: Record<string, string> = {};
+    if (!isTestAccount(newEmail)) errors.email = '請使用 @test.com';
+    if (!emailPassword) errors.password = '請輸入密碼';
+    setAccountErrors(errors);
+    if (Object.keys(errors).length) return;
+    setSaving('email');
+    try {
+      const res = await fetch(`${BASE_URL}/me/change-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ new_email: newEmail.trim(), password: emailPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setAccountErrors({ password: data.detail || '密碼錯誤' }); return; }
+      setProfile((p: any) => ({ ...p, email: data.email }));
+      setEmailPassword('');
+      Alert.alert('帳號已更新', `之後請使用 ${data.email} 登入。`);
+    } catch { Alert.alert('網路錯誤'); } finally { setSaving(''); }
+  };
+
+  const verifyPassword = async () => {
+    setPasswordErrors({});
+    if (!currentPassword) { setPasswordErrors({ current: '請輸入原密碼' }); return; }
+    setSaving('verify');
+    try {
+      const res = await fetch(`${BASE_URL}/me/verify-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ password: currentPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setPasswordErrors({ current: data.detail || '原密碼錯誤' }); return; }
+      setPasswordVerified(true);
+    } catch { Alert.alert('網路錯誤'); } finally { setSaving(''); }
+  };
+
+  const changePassword = async () => {
+    const errors: Record<string, string> = {};
+    if (!isStrongPassword(newPassword)) errors.new = '至少8位（包含英文、數字、大寫、小寫）';
+    if (newPassword !== newConfirm) errors.confirm = '兩次輸入的密碼不一致';
+    setPasswordErrors(errors);
+    if (Object.keys(errors).length) return;
+    setSaving('password');
+    try {
+      const res = await fetch(`${BASE_URL}/me/change-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setPasswordErrors({ current: data.detail || '更新失敗' }); return; }
+      setCurrentPassword('');
+      setNewPassword('');
+      setNewConfirm('');
+      setPasswordVerified(false);
+      Alert.alert('密碼已更新', '下次登入請使用新密碼。');
+    } catch { Alert.alert('網路錯誤'); } finally { setSaving(''); }
+  };
+
+  return (
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScreenBg source={require('./assets/login.png')}>
+        <ScrollView contentContainerStyle={s.personalScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          <View style={s.personalHeader}>
+            <BackButton onPress={() => navigation.goBack()} />
+            <Text style={s.personalPageTitle}>個人資料</Text>
+          </View>
+
+          <View style={s.personalCard}>
+            <View style={s.identityStatusRow}>
+              <Text style={s.personalSectionTitle}>身份綁定</Text>
+              <Text style={[s.identityStatus, profile?.identity_completed && s.identityStatusDone]}>
+                {profile?.identity_completed ? '已完成' : '尚未完成'}
+              </Text>
+            </View>
+            <Text style={s.personalDesc}>設定生日與手機，生日當天會收到小島精靈的祝福，也能用手機找回密碼。</Text>
+            <Text style={s.personalInputLabel}>暱稱</Text>
+            <TextInput style={s.personalInput} value={name} onChangeText={v => { setName(v); setIdentityErrors(e => ({ ...e, name: '' })); }} />
+            {!!identityErrors.name && <Text style={s.fieldError}>*{identityErrors.name}</Text>}
+            <Text style={s.personalInputLabel}>出生年月日</Text>
+            <TextInput style={s.personalInput} placeholder="YYYY-MM-DD" placeholderTextColor={C.muted} value={birthDate} onChangeText={v => { setBirthDate(v); setIdentityErrors(e => ({ ...e, birth: '' })); }} keyboardType="numbers-and-punctuation" />
+            {!!identityErrors.birth && <Text style={s.fieldError}>*{identityErrors.birth}</Text>}
+            <Text style={s.personalInputLabel}>綁定手機</Text>
+            <TextInput style={s.personalInput} placeholder="0912345678" placeholderTextColor={C.muted} value={phone} onChangeText={v => { setPhone(v); setIdentityErrors(e => ({ ...e, phone: '' })); }} keyboardType="phone-pad" />
+            {!!identityErrors.phone && <Text style={s.fieldError}>*{identityErrors.phone}</Text>}
+            <TouchableOpacity style={s.personalSaveBtn} onPress={saveIdentity} disabled={saving === 'identity'}>
+              {saving === 'identity' ? <ActivityIndicator color="white" /> : <Text style={s.personalSaveText}>儲存身份資料</Text>}
+            </TouchableOpacity>
+          </View>
+
+          <View style={s.personalCard}>
+            <Text style={s.personalSectionTitle}>改動帳號</Text>
+            <Text style={s.personalDesc}>登入帳號必須使用 @test.com 結尾，確認密碼後才可更換。</Text>
+            <Text style={s.personalInputLabel}>登入帳號</Text>
+            <TextInput style={s.personalInput} value={newEmail} onChangeText={v => { setNewEmail(v); setAccountErrors(e => ({ ...e, email: '' })); }} autoCapitalize="none" keyboardType="email-address" />
+            {!!accountErrors.email && <Text style={s.fieldError}>*{accountErrors.email}</Text>}
+            <Text style={s.personalInputLabel}>目前密碼</Text>
+            <PasswordField value={emailPassword} placeholder="輸入密碼以確認" onChangeText={(v: string) => { setEmailPassword(v); setAccountErrors(e => ({ ...e, password: '' })); }} error={accountErrors.password} />
+            <TouchableOpacity style={s.personalOutlineBtn} onPress={changeEmail} disabled={saving === 'email'}>
+              {saving === 'email' ? <ActivityIndicator color={C.accent} /> : <Text style={s.personalOutlineText}>更新帳號</Text>}
+            </TouchableOpacity>
+          </View>
+
+          <View style={s.personalCard}>
+            <Text style={s.personalSectionTitle}>改動密碼</Text>
+            <Text style={s.personalDesc}>先輸入原密碼驗證，再設定符合安全規則的新密碼。</Text>
+            <PasswordField value={currentPassword} placeholder="原密碼" onChangeText={(v: string) => { setCurrentPassword(v); setPasswordErrors(e => ({ ...e, current: '' })); setPasswordVerified(false); }} error={passwordErrors.current} />
+            {!passwordVerified ? (
+              <TouchableOpacity style={s.personalOutlineBtn} onPress={verifyPassword} disabled={saving === 'verify'}>
+                {saving === 'verify' ? <ActivityIndicator color={C.accent} /> : <Text style={s.personalOutlineText}>驗證原密碼</Text>}
+              </TouchableOpacity>
+            ) : (
+              <>
+                <PasswordField value={newPassword} placeholder="新密碼" onChangeText={(v: string) => { setNewPassword(v); setPasswordErrors(e => ({ ...e, new: '' })); }} error={passwordErrors.new} />
+                <PasswordField value={newConfirm} placeholder="再次輸入新密碼" onChangeText={(v: string) => { setNewConfirm(v); setPasswordErrors(e => ({ ...e, confirm: '' })); }} error={passwordErrors.confirm} />
+                <TouchableOpacity style={s.personalSaveBtn} onPress={changePassword} disabled={saving === 'password'}>
+                  {saving === 'password' ? <ActivityIndicator color="white" /> : <Text style={s.personalSaveText}>更新密碼</Text>}
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+
+          <TouchableOpacity style={s.personalLogoutBtn} onPress={() => Alert.alert('確認登出', '確定要登出嗎？', [{ text: '取消', style: 'cancel' }, { text: '登出', style: 'destructive', onPress: logout }])}>
+            <Text style={s.personalLogoutText}>登出</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </ScreenBg>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -2417,6 +2707,7 @@ function RootNavigator() {
       <Stack.Screen name="WeeklyAnalysis" component={WeeklyAnalysisScreen} />
       <Stack.Screen name="WeeklyImpact" component={WeeklyImpactScreen} />
       <Stack.Screen name="Favorites" component={FavoritesScreen} />
+      <Stack.Screen name="PersonalInfo" component={PersonalInfoScreen} />
     </Stack.Navigator>
   );
 }
@@ -2493,7 +2784,7 @@ export default function App() {
   const [token, setToken] = useState('');
   const [username, setUsernameState] = useState('');
   const [avatar, setAvatarState] = useState('boy');
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot'>('login');
   const [entry, setEntry] = useState<'welcome' | 'auth' | 'onboarding' | 'main'>('welcome');
 
   useEffect(() => {
@@ -2660,7 +2951,13 @@ const s = StyleSheet.create({
   loginTitle: { fontSize: 27, fontFamily: FONT_BOLD, color: C.text, letterSpacing: 2.5 },
   loginSubtitle: { marginTop: 8, fontSize: 13, fontFamily: FONT_REG, color: C.sub, letterSpacing: 1 },
   loginForm: { marginTop: 0 },
-  loginInput: { height: 52, borderWidth: 1, borderColor: 'rgba(232,224,213,0.95)', borderRadius: 14, paddingHorizontal: 18, marginBottom: 14, backgroundColor: 'rgba(255,255,255,0.87)', fontSize: 15, fontFamily: FONT_REG, color: C.text },
+  loginFieldWrap: { marginBottom: 14 },
+  loginInput: { height: 52, borderWidth: 1, borderColor: 'rgba(232,224,213,0.95)', borderRadius: 14, paddingHorizontal: 18, backgroundColor: 'rgba(255,255,255,0.87)', fontSize: 15, fontFamily: FONT_REG, color: C.text },
+  secretField: { height: 52, borderWidth: 1, borderColor: 'rgba(232,224,213,0.95)', borderRadius: 14, paddingLeft: 18, paddingRight: 7, backgroundColor: 'rgba(255,255,255,0.87)', flexDirection: 'row', alignItems: 'center' },
+  secretInput: { flex: 1, height: 50, fontSize: 15, fontFamily: FONT_REG, color: C.text },
+  eyeBtn: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center' },
+  eyeText: { fontSize: 21, fontFamily: FONT_REG, color: C.sub },
+  fieldError: { marginTop: 5, marginLeft: 6, fontSize: 12, lineHeight: 18, color: '#C75C50', fontFamily: FONT_MED },
   forgotBtn: { alignSelf: 'flex-end', marginTop: -2, marginBottom: 22 },
   forgotText: { fontSize: 12, color: C.accent, fontFamily: FONT_REG, letterSpacing: 0.5 },
   loginBtn: { height: 52, borderRadius: 26, backgroundColor: C.accent, justifyContent: 'center', alignItems: 'center' },
@@ -2871,6 +3168,23 @@ const s = StyleSheet.create({
   favoriteListTree: { width: 64, height: 64, marginRight: 12 },
   favoriteListDate: { fontSize: 16, lineHeight: 24, fontFamily: FONT_BOLD, color: C.text, marginBottom: 4 },
   favoriteListArrow: { fontSize: 28, color: C.sub, marginLeft: 8 },
+  personalScroll: { paddingHorizontal: 22, paddingTop: 56, paddingBottom: 54 },
+  personalHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 24 },
+  personalPageTitle: { flex: 1, marginLeft: -42, textAlign: 'center', fontSize: 23, lineHeight: 32, fontFamily: FONT_BOLD, color: C.text },
+  personalCard: { borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.96)', borderWidth: 1, borderColor: C.line, padding: 18, marginBottom: 14 },
+  identityStatusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  personalSectionTitle: { fontSize: 19, lineHeight: 27, fontFamily: FONT_BOLD, color: C.text },
+  identityStatus: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: '#FCECE7', color: '#D85A30', fontSize: 12, fontFamily: FONT_BOLD },
+  identityStatusDone: { backgroundColor: '#F1F7E9', color: C.accent },
+  personalDesc: { fontSize: 13, lineHeight: 21, color: C.sub, fontFamily: FONT_REG, marginBottom: 14 },
+  personalInputLabel: { fontSize: 13, lineHeight: 20, color: C.sub, fontFamily: FONT_BOLD, marginBottom: 5, marginTop: 4 },
+  personalInput: { height: 48, borderWidth: 1, borderColor: C.line, borderRadius: 12, paddingHorizontal: 14, backgroundColor: '#FFFDF8', fontSize: 15, fontFamily: FONT_REG, color: C.text, marginBottom: 10 },
+  personalSaveBtn: { height: 50, borderRadius: 25, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
+  personalSaveText: { color: '#FFFFFF', fontSize: 15, fontFamily: FONT_BOLD },
+  personalOutlineBtn: { height: 48, borderRadius: 24, borderWidth: 1, borderColor: C.accent, alignItems: 'center', justifyContent: 'center', marginTop: 7 },
+  personalOutlineText: { color: C.accent, fontSize: 15, fontFamily: FONT_BOLD },
+  personalLogoutBtn: { height: 52, borderRadius: 26, backgroundColor: '#FFF2EF', justifyContent: 'center', alignItems: 'center', marginTop: 4, marginBottom: 30 },
+  personalLogoutText: { fontSize: 16, fontFamily: FONT_BOLD, color: C.danger },
   optionCard: { width: '100%', borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.98)', padding: 20, borderWidth: 1, borderColor: C.line },
   optionItem: { paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(232,224,213,0.55)' },
   settingRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },

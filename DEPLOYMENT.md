@@ -45,7 +45,7 @@ curl https://<your-api-domain>/health
 
 ## 免費排程喚醒 Render
 
-不購買 Render 方案時，使用 `.github/workflows/wake-daily-diary.yml` 呼叫受密鑰保護的 `/tasks/daily-diary/run`。它在台灣時間 18:33 至隔日 02:03 間每 10 分鐘觸發，涵蓋 App 可選的 19:00 至 23:59 整理時間與最長 120 分鐘修改期限。
+不購買 Render 方案時，使用 `.github/workflows/wake-daily-diary.yml` 呼叫受密鑰保護的 `/tasks/daily-diary/run`。它每個整點喚醒服務，檢查上一小時是否完全沒有小日記並發送提醒；在台灣時間 18:33 至隔日 02:03 間另外每 10 分鐘觸發，涵蓋 App 可選的 19:00 至 23:59 整理時間與最長 120 分鐘修改期限。
 
 1. 自行產生一段長而隨機的密鑰，例如密碼管理器產生的隨機字串。
 2. 在 Render 的 `emotional-island-api` 服務打開 `Environment`，新增：
