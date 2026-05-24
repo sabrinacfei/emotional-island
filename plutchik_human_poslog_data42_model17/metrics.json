@@ -1,0 +1,112 @@
+{
+  "macro_f1": 0.5801197725536879,
+  "micro_f1": 0.5830501274426508,
+  "weighted_f1": 0.5823117544306382,
+  "samples_f1": 0.6021465887578275,
+  "exact_match": 0.3704128440366973,
+  "hamming_loss": 0.14069667431192662,
+  "true_labels_per_sample": 1.2855504751205444,
+  "pred_labels_per_sample": 1.4139908256880733,
+  "per_class": {
+    "anger": {
+      "precision": 0.5094527363184079,
+      "recall": 0.6692810457516339,
+      "f1": 0.5785310734463277,
+      "support": 765,
+      "threshold": 0.49000000953674316
+    },
+    "anticipation": {
+      "precision": 0.5534105534105535,
+      "recall": 0.6323529411764706,
+      "f1": 0.5902539464653397,
+      "support": 680,
+      "threshold": 0.5099999904632568
+    },
+    "disgust": {
+      "precision": 0.5889423076923077,
+      "recall": 0.5291576673866091,
+      "f1": 0.5574516496018203,
+      "support": 463,
+      "threshold": 0.6100000143051147
+    },
+    "fear": {
+      "precision": 0.5324909747292419,
+      "recall": 0.6045081967213115,
+      "f1": 0.5662188099808061,
+      "support": 488,
+      "threshold": 0.6899999976158142
+    },
+    "joy": {
+      "precision": 0.6428571428571429,
+      "recall": 0.7142857142857143,
+      "f1": 0.6766917293233082,
+      "support": 567,
+      "threshold": 0.550000011920929
+    },
+    "sadness": {
+      "precision": 0.562,
+      "recall": 0.5699797160243407,
+      "f1": 0.5659617321248741,
+      "support": 493,
+      "threshold": 0.6700000166893005
+    },
+    "surprise": {
+      "precision": 0.5319148936170213,
+      "recall": 0.5122950819672131,
+      "f1": 0.5219206680584552,
+      "support": 488,
+      "threshold": 0.49000000953674316
+    },
+    "trust": {
+      "precision": 0.5637931034482758,
+      "recall": 0.6055555555555555,
+      "f1": 0.5839285714285715,
+      "support": 540,
+      "threshold": 0.6499999761581421
+    }
+  },
+  "classification_report": "              precision    recall  f1-score   support\n\n       anger       0.51      0.67      0.58       765\nanticipation       0.55      0.63      0.59       680\n     disgust       0.59      0.53      0.56       463\n        fear       0.53      0.60      0.57       488\n         joy       0.64      0.71      0.68       567\n     sadness       0.56      0.57      0.57       493\n    surprise       0.53      0.51      0.52       488\n       trust       0.56      0.61      0.58       540\n\n   micro avg       0.56      0.61      0.58      4484\n   macro avg       0.56      0.60      0.58      4484\nweighted avg       0.56      0.61      0.58      4484\n samples avg       0.60      0.66      0.60      4484\n",
+  "loss": 0.32000626521099595,
+  "best_val_macro_f1": 0.5999744645004563,
+  "val_macro_f1_at_best_state": 0.5999744645004563,
+  "binary_sentiment_diagnostic": {
+    "n_samples": 3210,
+    "threshold": 0.3999999999999998,
+    "macro_f1": 0.8623465099481253,
+    "micro_f1": 0.864957264957265
+  },
+  "plutchik_consistency": {
+    "true_adjacent_dyad_rates": {
+      "joy+trust": 0.03125,
+      "trust+fear": 0.01118119266055046,
+      "fear+surprise": 0.012901376146788992,
+      "surprise+sadness": 0.01978211009174312,
+      "sadness+disgust": 0.013761467889908258,
+      "disgust+anger": 0.03555045871559633,
+      "anger+anticipation": 0.023509174311926607,
+      "anticipation+joy": 0.02522935779816514
+    },
+    "pred_adjacent_dyad_rates": {
+      "joy+trust": 0.059059633027522936,
+      "trust+fear": 0.00028669724770642203,
+      "fear+surprise": 0.01261467889908257,
+      "surprise+sadness": 0.0020068807339449542,
+      "sadness+disgust": 0.008314220183486239,
+      "disgust+anger": 0.0871559633027523,
+      "anger+anticipation": 0.016341743119266054,
+      "anticipation+joy": 0.05131880733944954
+    },
+    "true_opposite_pair_rates": {
+      "joy+sadness": 0.0037270642201834864,
+      "trust+disgust": 0.0031536697247706424,
+      "fear+anger": 0.016628440366972478,
+      "surprise+anticipation": 0.010894495412844037
+    },
+    "pred_opposite_pair_rates": {
+      "joy+sadness": 0.0011467889908256881,
+      "trust+disgust": 0.0,
+      "fear+anger": 0.03239678899082569,
+      "surprise+anticipation": 0.0194954128440367
+    }
+  }
+}

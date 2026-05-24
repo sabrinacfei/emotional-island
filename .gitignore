@@ -1,0 +1,34 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.venv/
+.venv-*/
+
+node_modules/
+EmotionApp2/node_modules/
+EmotionApp2/.expo/
+EmotionApp2/dist/
+EmotionApp2/build/
+EmotionApp2/.env
+EmotionApp2/.env.*
+EmotionApp2/npm-debug.log*
+EmotionApp2/yarn-debug.log*
+EmotionApp2/yarn-error.log*
+
+# Large ML checkpoints should be stored with Git LFS or external storage.
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Local generated/cache files
+*.log
+coverage/
+.pytest_cache/

@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: emotional-island-api
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: MONGODB_URL
+        sync: false
+      - key: DATABASE_NAME
+        value: emotion_tracker_db
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: PREDICT_SCRIPT_PATH
+        value: ./predict_sentence_json.py
+      - key: PLUTCHIK_MODEL_DIR
+        value: ./plutchik_human_poslog_data42_model17

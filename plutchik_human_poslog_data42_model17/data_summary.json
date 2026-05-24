@@ -1,0 +1,109 @@
+{
+  "all_human": {
+    "name": "all_human",
+    "n": 17523,
+    "labels_per_sample": 1.2793471813201904,
+    "label_counts": {
+      "anger": 3826,
+      "anticipation": 3400,
+      "disgust": 2317,
+      "fear": 2439,
+      "joy": 2833,
+      "sadness": 2464,
+      "surprise": 2440,
+      "trust": 2699
+    },
+    "source_counts": {
+      "xed": 17523
+    }
+  },
+  "train_human": {
+    "name": "train_human",
+    "n": 11243,
+    "labels_per_sample": 1.2761718034744263,
+    "label_counts": {
+      "anger": 2449,
+      "anticipation": 2176,
+      "disgust": 1483,
+      "fear": 1561,
+      "joy": 1813,
+      "sadness": 1577,
+      "surprise": 1562,
+      "trust": 1727
+    },
+    "source_counts": {
+      "xed": 11243
+    }
+  },
+  "train_fit": {
+    "name": "train_fit",
+    "n": 11243,
+    "labels_per_sample": 1.2761718034744263,
+    "label_counts": {
+      "anger": 2449,
+      "anticipation": 2176,
+      "disgust": 1483,
+      "fear": 1561,
+      "joy": 1813,
+      "sadness": 1577,
+      "surprise": 1562,
+      "trust": 1727
+    },
+    "source_counts": {
+      "xed": 11243
+    }
+  },
+  "validation": {
+    "name": "validation",
+    "n": 2792,
+    "labels_per_sample": 1.28438401222229,
+    "label_counts": {
+      "anger": 612,
+      "anticipation": 544,
+      "disgust": 371,
+      "fear": 390,
+      "joy": 453,
+      "sadness": 394,
+      "surprise": 390,
+      "trust": 432
+    },
+    "source_counts": {
+      "xed": 2792
+    }
+  },
+  "test": {
+    "name": "test",
+    "n": 3488,
+    "labels_per_sample": 1.2855504751205444,
+    "label_counts": {
+      "anger": 765,
+      "anticipation": 680,
+      "disgust": 463,
+      "fear": 488,
+      "joy": 567,
+      "sadness": 493,
+      "surprise": 488,
+      "trust": 540
+    },
+    "source_counts": {
+      "xed": 3488
+    }
+  },
+  "synthetic_warmup": {
+    "name": "synthetic_warmup",
+    "n": 0,
+    "labels_per_sample": 0.0,
+    "label_counts": {},
+    "source_counts": {}
+  },
+  "labels": [
+    "anger",
+    "anticipation",
+    "disgust",
+    "fear",
+    "joy",
+    "sadness",
+    "surprise",
+    "trust"
+  ]
+}

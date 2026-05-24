@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>情緒日記</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #1a1a1a; }
+.app { max-width: 480px; margin: 0 auto; background: #fff; min-height: 100vh; padding: 1.25rem 1.25rem 4rem; }
+.user-bar { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 1.25rem; }
+.user-btn { padding: 7px 16px; font-size: 13px; font-weight: 500; border-radius: 20px; border: 1px solid #ddd; cursor: pointer; background: #fff; color: #888; white-space: nowrap; flex-shrink: 0; }
+.user-btn.on { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+.tabs { display: flex; border: 1px solid #e5e5e5; border-radius: 12px; overflow: hidden; margin-bottom: 1.5rem; }
+.tab { flex: 1; padding: 10px; font-size: 14px; font-weight: 500; border: none; cursor: pointer; background: transparent; color: #aaa; }
+.tab.on { background: #f0f0f0; color: #1a1a1a; }
+.pg { display: none; }
+.pg.on { display: block; }
+.date-nav { display: flex; align-items: center; justify-content: center; gap: 16px; margin-bottom: 1rem; }
+.nav-btn { background: none; border: 1px solid #e5e5e5; border-radius: 8px; width: 32px; height: 32px; font-size: 18px; cursor: pointer; color: #666; display: flex; align-items: center; justify-content: center; line-height: 1; }
+.nav-btn:disabled { color: #ddd; border-color: #f0f0f0; cursor: default; }
+.nav-date { font-size: 15px; font-weight: 500; color: #1a1a1a; min-width: 110px; text-align: center; }
+.title { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+.sub { font-size: 13px; color: #666; margin-bottom: 1rem; line-height: 1.5; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 1.25rem; }
+.badge { font-size: 11px; padding: 4px 10px; border-radius: 6px; font-weight: 500; }
+.chart-hint { font-size: 12px; color: #ccc; text-align: center; margin: 4px 0 1rem; }
+.emo-popup { display: none; border-radius: 12px; border: 1px solid #eee; padding: 1rem 1.1rem; margin-bottom: 1.25rem; border-left-width: 3px; }
+.emo-popup-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.emo-popup-title { font-size: 14px; font-weight: 500; }
+.emo-popup-body { font-size: 13px; color: #555; line-height: 1.7; }
+.slbl { font-size: 12px; color: #aaa; font-weight: 500; margin: 14px 0 6px; }
+.trow { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
+.pill { font-size: 11px; padding: 2px 10px; border-radius: 5px; white-space: nowrap; margin-top: 2px; }
+.rsn { font-size: 13px; color: #1a1a1a; line-height: 1.6; }
+.leg { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 1.25rem; }
+.li { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #666; }
+.ll { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
+.hint { font-size: 12px; color: #ccc; text-align: center; margin-bottom: 1rem; }
+.card { display: none; background: #f9f9f9; border-radius: 12px; border: 1px solid #eee; padding: 1rem 1.1rem; margin-top: .75rem; }
+.ch { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 10px; }
+.cd { font-size: 15px; font-weight: 500; }
+.cs { font-size: 12px; color: #888; margin-top: 3px; }
+.xbtn { background: none; border: none; cursor: pointer; font-size: 16px; color: #ccc; padding: 0; }
+.nodata { font-size: 13px; color: #bbb; }
+</style>
+</head>
+<body>
+<div class="app">
+  <p id="year-label" style="font-size:12px;color:#bbb;text-align:center;margin-bottom:0.75rem;"></p>
+  <div class="user-bar" id="ubar"></div>
+  <div class="tabs">
+    <button class="tab on" id="t1" onclick="goPage(1)">當天情緒分布</button>
+    <button class="tab" id="t2" onclick="goPage(2)">七天趨勢</button>
+  </div>
+
+  <div class="pg on" id="pg1">
+    <div class="date-nav">
+      <button class="nav-btn" id="prevBtn" onclick="changeDay(-1)">‹</button>
+      <span class="nav-date" id="p1date"></span>
+      <button class="nav-btn" id="nextBtn" onclick="changeDay(1)">›</button>
+    </div>
+    <p class="title">情緒分布</p>
+    <p class="sub" id="p1sub"></p>
+    <div class="badges" id="p1dom"></div>
+    <div style="position:relative;"><canvas id="barC" height="220" style="width:100%;display:block;"></canvas></div>
+    <p class="chart-hint">點擊柱狀圖查看情緒來源</p>
+    <div class="emo-popup" id="ePopup">
+      <div class="emo-popup-hdr">
+        <span class="emo-popup-title" id="ePopupTitle"></span>
+        <button class="xbtn" onclick="document.getElementById('ePopup').style.display='none'">✕</button>
+      </div>
+      <div class="emo-popup-body" id="ePopupBody"></div>
+    </div>
+    <div id="p1tags"></div>
+  </div>
+
+  <div class="pg" id="pg2">
+    <p class="title" style="margin-bottom:4px;">七天情緒走勢</p>
+    <p style="font-size:12px;color:#aaa;margin-bottom:1rem;">綜合正負情緒計算出每日情緒分數，拖動輔助線查看當天詳情</p>
+    <div style="position:relative;"><canvas id="lineC" height="260" style="width:100%;display:block;cursor:ew-resize;"></canvas></div>
+    <div class="card" id="dcard">
+      <div class="ch">
+        <div><p class="cd" id="ddate"></p><p class="cs" id="dsub"></p></div>
+        <button class="xbtn" onclick="document.getElementById('dcard').style.display='none'">✕</button>
+      </div>
+      <div class="badges" id="ddom"></div>
+      <div id="dtags"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 常數 ──
+const EC = {
+  Joy:          {l:"喜悅", c:"#1D9E75"},
+  Sadness:      {l:"悲傷", c:"#378ADD"},
+  Anger:        {l:"憤怒", c:"#E24B4A"},
+  Fear:         {l:"恐懼", c:"#D85A30"},
+  Anticipation: {l:"期待", c:"#BA7517"},
+  Surprise:     {l:"驚訝", c:"#D4537E"},
+  Disgust:      {l:"厭惡", c:"#888780"},
+  Trust:        {l:"信任", c:"#7F77DD"}
+};
+const TL = {
+  time:"時間壓力",schoolwork:"課業壓力",future:"對未來的焦慮",relationships:"人際關係",
+  family:"家庭",health:"健康",money:"金錢",self_image:"自我形象",other:"其他",
+  family_support:"家人支持",friend_support:"朋友支持",rest:"休息",routine:"日常作息",
+  exercise:"運動",none:"無緩衝",friend_time:"朋友相處",family_time:"家人相處",
+  achievement:"成就感",relief:"如釋重負",gratitude:"感恩"
+};
+const FULL_DATES = ["2026-05-15","2026-05-16","2026-05-17","2026-05-18","2026-05-19","2026-05-20","2026-05-21"];
+const SHORT_DATES = ["05/15","05/16","05/17","05/18","05/19","05/20","05/21"];
+
+// 每種情緒對應查哪一類標籤
+const EMO_SRC = {
+  Joy:          ["jt"],
+  Trust:        ["jt","bt"],
+  Anticipation: ["jt","st"],
+  Surprise:     ["jt"],
+  Sadness:      ["st"],
+  Fear:         ["st"],
+  Anger:        ["st"],
+  Disgust:      ["st"]
+};
+
+// ── 假資料 ──
+const DB = {
+  "小明": [
+    {e:{Joy:40,Sadness:30,Anger:5,Fear:20,Anticipation:15,Surprise:5,Disgust:0,Trust:50},dom:["Trust","Joy","Fear"],st:[{t:"schoolwork",r:"期末報告壓力大，一直熬夜趕工"},{t:"future",r:"對畢業後方向感到迷茫"}],bt:[{t:"friend_support",r:"朋友陪讀讓心情穩定"}],jt:[{t:"achievement",r:"完成困難作業的成就感"}],s:"學業壓力大，靠朋友支持撐過去"},
+    {e:{Joy:20,Sadness:65,Anger:10,Fear:15,Anticipation:5,Surprise:0,Disgust:5,Trust:10},dom:["Sadness","Anger","Joy"],st:[{t:"relationships",r:"和朋友發生誤解心情很沉"}],bt:[{t:"rest",r:"長覺稍微恢復"}],jt:[],s:"人際摩擦讓這天情緒偏低"},
+    {e:{Joy:60,Sadness:10,Anger:0,Fear:10,Anticipation:25,Surprise:10,Disgust:0,Trust:65},dom:["Trust","Joy","Anticipation"],st:[{t:"time",r:"行程太滿沒有喘息空間"}],bt:[{t:"routine",r:"維持作息讓情緒穩定"}],jt:[{t:"friend_time",r:"和朋友聚餐心情變好"}],s:"忙碌但朋友陪伴讓心情愉快"},
+    {e:{Joy:15,Sadness:40,Anger:20,Fear:50,Anticipation:5,Surprise:0,Disgust:10,Trust:25},dom:["Fear","Sadness","Anger"],st:[{t:"future",r:"出路未定感到焦慮"},{t:"self_image",r:"覺得自己表現不夠好"}],bt:[{t:"none",r:""}],jt:[],s:"對未來的不確定感讓情緒很低"},
+    {e:{Joy:45,Sadness:20,Anger:0,Fear:10,Anticipation:30,Surprise:5,Disgust:0,Trust:55},dom:["Trust","Joy","Anticipation"],st:[{t:"health",r:"身體不舒服影響心情"}],bt:[{t:"family_support",r:"家人的關心讓感覺被支持"}],jt:[{t:"gratitude",r:"感謝有家人在身邊"}],s:"身體不適但家人給了很多溫暖"},
+    {e:{Joy:55,Sadness:15,Anger:0,Fear:5,Anticipation:35,Surprise:10,Disgust:0,Trust:70},dom:["Trust","Anticipation","Joy"],st:[{t:"schoolwork",r:"報告告一段落壓力減輕"}],bt:[{t:"rest",r:"好好休息讓能量恢復"}],jt:[{t:"relief",r:"交出報告後如釋重負"}],s:"壓力解除後整個人輕鬆很多"},
+    {e:{Joy:70,Sadness:5,Anger:0,Fear:0,Anticipation:10,Surprise:5,Disgust:0,Trust:75},dom:["Trust","Joy","Anticipation"],st:[],bt:[{t:"friend_support",r:"和朋友一起規劃接下來的事"}],jt:[{t:"achievement",r:"完成重要里程碑"},{t:"friend_time",r:"和好友度過愉快時光"}],s:"情緒最佳的一天，充滿活力"}
+  ],
+  "小華": [
+    {e:{Joy:30,Sadness:50,Anger:15,Fear:30,Anticipation:10,Surprise:0,Disgust:10,Trust:20},dom:["Sadness","Fear","Anger"],st:[{t:"family",r:"家裡有事讓心情很沉重"},{t:"money",r:"這個月開銷超出預算"}],bt:[{t:"rest",r:"睡覺是唯一喘息時間"}],jt:[],s:"家庭與金錢雙重壓力"},
+    {e:{Joy:35,Sadness:40,Anger:5,Fear:20,Anticipation:20,Surprise:5,Disgust:5,Trust:35},dom:["Sadness","Joy","Fear"],st:[{t:"future",r:"不確定自己的方向在哪"}],bt:[{t:"routine",r:"維持日常讓心情不崩"}],jt:[{t:"rest",r:"難得有時間休息"}],s:"迷茫感仍在，稍微找回平靜"},
+    {e:{Joy:50,Sadness:20,Anger:0,Fear:10,Anticipation:40,Surprise:15,Disgust:0,Trust:45},dom:["Anticipation","Joy","Trust"],st:[{t:"schoolwork",r:"有個大報告要準備"}],bt:[{t:"friend_support",r:"室友陪我討論壓力小很多"}],jt:[{t:"achievement",r:"報告大綱完成感覺很好"}],s:"和朋友合作讓這天充滿動力"},
+    {e:{Joy:25,Sadness:55,Anger:25,Fear:20,Anticipation:5,Surprise:0,Disgust:15,Trust:15},dom:["Sadness","Anger","Disgust"],st:[{t:"relationships",r:"被人誤解又不知怎麼解釋"},{t:"self_image",r:"開始懷疑自己哪裡有問題"}],bt:[{t:"none",r:""}],jt:[],s:"人際誤解加自我懷疑，很難熬"},
+    {e:{Joy:40,Sadness:25,Anger:5,Fear:15,Anticipation:35,Surprise:10,Disgust:0,Trust:50},dom:["Trust","Anticipation","Joy"],st:[{t:"time",r:"時間不夠用，事情排不完"}],bt:[{t:"exercise",r:"去跑步讓頭腦清醒很多"}],jt:[{t:"relief",r:"解決了一件懸著的事"}],s:"運動幫助找回能量，心情轉好"},
+    {e:{Joy:60,Sadness:15,Anger:0,Fear:5,Anticipation:30,Surprise:10,Disgust:0,Trust:60},dom:["Joy","Trust","Anticipation"],st:[{t:"time",r:"還有事情沒完成但不焦慮了"}],bt:[{t:"family_support",r:"媽媽打電話來心情很好"}],jt:[{t:"family_time",r:"和家人視訊感覺很溫暖"}],s:"家人的聯繫讓這天很有力量"},
+    {e:{Joy:65,Sadness:10,Anger:0,Fear:5,Anticipation:25,Surprise:10,Disgust:0,Trust:65},dom:["Trust","Joy","Anticipation"],st:[],bt:[{t:"friend_support",r:"和朋友出去散心"}],jt:[{t:"friend_time",r:"久違的放鬆心情大好"},{t:"gratitude",r:"感謝身邊有這些朋友"}],s:"難得的放鬆，整個人都輕盈了"}
+  ],
+  "雅婷": [
+    {e:{Joy:55,Sadness:15,Anger:0,Fear:10,Anticipation:50,Surprise:15,Disgust:0,Trust:60},dom:["Anticipation","Trust","Joy"],st:[{t:"future",r:"新工作即將開始有點緊張"}],bt:[{t:"routine",r:"按部就班準備讓自己安心"}],jt:[{t:"achievement",r:"準備工作都完成了很有成就感"}],s:"期待新工作，緊張中帶著興奮"},
+    {e:{Joy:70,Sadness:5,Anger:0,Fear:5,Anticipation:55,Surprise:20,Disgust:0,Trust:65},dom:["Anticipation","Joy","Trust"],st:[{t:"time",r:"新環境要適應，節奏比較快"}],bt:[{t:"friend_support",r:"同事很友善讓適應順利"}],jt:[{t:"achievement",r:"第一天表現讓自己滿意"},{t:"friend_time",r:"和新同事聊得很開心"}],s:"第一天上班順利，充滿活力"},
+    {e:{Joy:50,Sadness:20,Anger:5,Fear:20,Anticipation:30,Surprise:10,Disgust:5,Trust:45},dom:["Joy","Trust","Anticipation"],st:[{t:"schoolwork",r:"工作量比預期多，有點吃力"}],bt:[{t:"routine",r:"每天固定作息讓身心穩定"}],jt:[{t:"achievement",r:"順利完成交辦任務"}],s:"工作量有點多，但完成任務感覺還不錯"},
+    {e:{Joy:35,Sadness:35,Anger:10,Fear:25,Anticipation:15,Surprise:5,Disgust:5,Trust:30},dom:["Sadness","Fear","Joy"],st:[{t:"family",r:"很想家，但沒時間回去"},{t:"time",r:"工作和生活還沒平衡好"}],bt:[{t:"rest",r:"週末好好補眠"}],jt:[{t:"gratitude",r:"感謝有機會嘗試新生活"}],s:"思鄉加上忙碌，情緒有點複雜"},
+    {e:{Joy:60,Sadness:15,Anger:0,Fear:10,Anticipation:40,Surprise:10,Disgust:0,Trust:60},dom:["Trust","Anticipation","Joy"],st:[{t:"time",r:"還有好多事想做但時間不夠"}],bt:[{t:"rest",r:"好好睡了一覺精神恢復"},{t:"exercise",r:"去爬山讓心情很好"}],jt:[{t:"relief",r:"暫時脫離工作壓力的輕鬆感"}],s:"週末好好充電，能量滿滿"},
+    {e:{Joy:65,Sadness:10,Anger:0,Fear:5,Anticipation:45,Surprise:15,Disgust:0,Trust:70},dom:["Trust","Anticipation","Joy"],st:[{t:"schoolwork",r:"有個重要簡報要準備"}],bt:[{t:"routine",r:"固定作息讓準備更有效率"}],jt:[{t:"achievement",r:"簡報準備進度超前"}],s:"狀態回升，對工作充滿信心"},
+    {e:{Joy:75,Sadness:5,Anger:0,Fear:5,Anticipation:35,Surprise:10,Disgust:0,Trust:80},dom:["Trust","Joy","Anticipation"],st:[],bt:[{t:"friend_support",r:"同事給了很多鼓勵"}],jt:[{t:"achievement",r:"簡報大成功，得到上司肯定"},{t:"friend_time",r:"和同事慶祝心情超好"}],s:"簡報大成功！這週最棒的一天"}
+  ],
+  "志豪": [
+    {e:{Joy:20,Sadness:60,Anger:30,Fear:25,Anticipation:5,Surprise:0,Disgust:20,Trust:10},dom:["Sadness","Anger","Fear"],st:[{t:"self_image",r:"一直覺得自己做什麼都不夠好"},{t:"future",r:"對未來完全沒有頭緒"}],bt:[{t:"none",r:""}],jt:[],s:"壓力積累，開始有些失控感"},
+    {e:{Joy:30,Sadness:45,Anger:15,Fear:20,Anticipation:15,Surprise:5,Disgust:10,Trust:25},dom:["Sadness","Fear","Joy"],st:[{t:"schoolwork",r:"作業堆積如山不知從哪開始"}],bt:[{t:"rest",r:"昨晚睡得比較好今天好一點"}],jt:[{t:"relief",r:"完成了一件拖很久的事"}],s:"好一點了，完成了一件拖很久的事"},
+    {e:{Joy:45,Sadness:25,Anger:5,Fear:15,Anticipation:30,Surprise:10,Disgust:5,Trust:40},dom:["Joy","Anticipation","Trust"],st:[{t:"relationships",r:"和某個朋友還有些疙瘩沒解決"}],bt:[{t:"friend_support",r:"其他朋友的支持讓我沒那麼孤單"}],jt:[{t:"friend_time",r:"一起打球心情好很多"}],s:"打球讓心情好多了"},
+    {e:{Joy:25,Sadness:50,Anger:20,Fear:30,Anticipation:10,Surprise:0,Disgust:15,Trust:15},dom:["Sadness","Fear","Anger"],st:[{t:"health",r:"連續幾天睡眠很差"},{t:"self_image",r:"對自己的狀態越來越不滿意"}],bt:[{t:"none",r:""}],jt:[],s:"睡不好加上自我否定，情緒很低"},
+    {e:{Joy:50,Sadness:20,Anger:5,Fear:10,Anticipation:35,Surprise:15,Disgust:0,Trust:50},dom:["Trust","Anticipation","Joy"],st:[{t:"time",r:"要趕的東西還很多"}],bt:[{t:"routine",r:"強迫自己早睡早起有改善"},{t:"exercise",r:"去健身讓身心都好一點"}],jt:[{t:"achievement",r:"今天的事情都按計畫完成"}],s:"作息調整後狀態明顯好轉"},
+    {e:{Joy:55,Sadness:15,Anger:0,Fear:10,Anticipation:30,Surprise:10,Disgust:0,Trust:60},dom:["Trust","Joy","Anticipation"],st:[{t:"schoolwork",r:"還有考試要準備"}],bt:[{t:"friend_support",r:"和室友一起讀書效率高"}],jt:[{t:"achievement",r:"念書念得有進度"}],s:"和室友一起念書，狀態不錯"},
+    {e:{Joy:65,Sadness:10,Anger:0,Fear:5,Anticipation:20,Surprise:10,Disgust:0,Trust:70},dom:["Trust","Joy","Anticipation"],st:[],bt:[{t:"rest",r:"考完試好好休息"},{t:"friend_support",r:"朋友約出去慶祝"}],jt:[{t:"relief",r:"考試結束整個人放鬆"},{t:"friend_time",r:"和朋友出去很開心"}],s:"考試結束，整個人放鬆下來了"}
+  ],
+  "佳穎": [
+    {e:{Joy:50,Sadness:20,Anger:0,Fear:15,Anticipation:45,Surprise:20,Disgust:0,Trust:55},dom:["Anticipation","Trust","Joy"],st:[{t:"future",r:"新計畫很多未知數有點不安"}],bt:[{t:"routine",r:"有計畫地推進讓自己安心"}],jt:[{t:"achievement",r:"把計畫細節都整理好了"}],s:"展開新計畫，期待與不安並存"},
+    {e:{Joy:60,Sadness:10,Anger:0,Fear:10,Anticipation:50,Surprise:15,Disgust:0,Trust:65},dom:["Anticipation","Trust","Joy"],st:[{t:"time",r:"同時進行太多事有點分身乏術"}],bt:[{t:"routine",r:"番茄鐘工作法幫助集中"}],jt:[{t:"achievement",r:"今天的進度超出預期"}],s:"進度超前，對自己很滿意"},
+    {e:{Joy:40,Sadness:30,Anger:10,Fear:20,Anticipation:25,Surprise:5,Disgust:5,Trust:40},dom:["Joy","Trust","Sadness"],st:[{t:"schoolwork",r:"遇到技術問題卡關好久"}],bt:[{t:"friend_support",r:"請教朋友後解決了問題"}],jt:[{t:"relief",r:"卡關的問題終於解決了"}],s:"遇到瓶頸，靠朋友幫助突破"},
+    {e:{Joy:35,Sadness:40,Anger:5,Fear:25,Anticipation:20,Surprise:5,Disgust:10,Trust:30},dom:["Sadness","Fear","Joy"],st:[{t:"health",r:"連續工作太累身體發出警訊"},{t:"time",r:"事情做不完開始焦慮"}],bt:[{t:"rest",r:"強迫自己休息半天"}],jt:[{t:"gratitude",r:"感謝自己還撐得住"}],s:"身體開始抗議，逼自己休息"},
+    {e:{Joy:55,Sadness:15,Anger:0,Fear:10,Anticipation:40,Surprise:10,Disgust:0,Trust:60},dom:["Trust","Anticipation","Joy"],st:[{t:"time",r:"進度有點落後需要追"}],bt:[{t:"exercise",r:"早上跑步讓精神很好"}],jt:[{t:"achievement",r:"把落後的進度追回來了"}],s:"重新出發，把落後的進度追回來"},
+    {e:{Joy:65,Sadness:10,Anger:0,Fear:5,Anticipation:45,Surprise:15,Disgust:0,Trust:70},dom:["Trust","Anticipation","Joy"],st:[{t:"future",r:"快完成了反而開始緊張成果"}],bt:[{t:"routine",r:"維持穩定節奏衝刺"}],jt:[{t:"achievement",r:"幾乎要完成計畫了"}],s:"衝刺階段，距離目標只差一步"},
+    {e:{Joy:80,Sadness:5,Anger:0,Fear:0,Anticipation:20,Surprise:15,Disgust:0,Trust:80},dom:["Joy","Trust","Surprise"],st:[],bt:[{t:"friend_support",r:"朋友都來幫忙慶祝"}],jt:[{t:"achievement",r:"計畫完成！所有努力都值得了"},{t:"friend_time",r:"和朋友慶祝心情超好"}],s:"計畫大功告成！這週最棒的結局"}
+  ]
+};
+
+// ── 狀態 ──
+const UNAMES = Object.keys(DB);
+let curUser = UNAMES[0];
+let curPage = 1;
+let curDayIdx = 6;
+let barHitBoxes = [];
+let linePoints = [];
+
+// ── 使用者按鈕 ──
+const ubar = document.getElementById('ubar');
+UNAMES.forEach(n => {
+  const b = document.createElement('button');
+  b.className = 'user-btn' + (n === curUser ? ' on' : '');
+  b.textContent = n;
+  b.onclick = () => { curUser = n; curDayIdx = 6; document.querySelectorAll('.user-btn').forEach(x => x.classList.toggle('on', x.textContent === n)); closeAll(); render(); };
+  ubar.appendChild(b);
+});
+
+// ── 頁面切換 ──
+function goPage(n) {
+  curPage = n;
+  document.getElementById('pg1').classList.toggle('on', n === 1);
+  document.getElementById('pg2').classList.toggle('on', n === 2);
+  document.getElementById('t1').classList.toggle('on', n === 1);
+  document.getElementById('t2').classList.toggle('on', n === 2);
+  closeAll();
+  render();
+}
+
+// ── 日期切換 ──
+function changeDay(dir) {
+  const next = curDayIdx + dir;
+  if (next < 0 || next > 6) return;
+  curDayIdx = next;
+  closeAll();
+  render();
+}
+
+function closeAll() {
+  document.getElementById('ePopup').style.display = 'none';
+  document.getElementById('dcard').style.display = 'none';
+}
+
+// ── 情緒來源說明 ──
+function getEmoSource(day, key) {
+  const val = day.e[key];
+  if (val === 0) return `今天沒有出現明顯的${EC[key].l}情緒。`;
+  const cats = EMO_SRC[key] || ["st"];
+  const lines = [];
+  cats.forEach(c => {
+    const list = c === 'st' ? day.st : c === 'bt' ? day.bt : day.jt;
+    if (list) list.filter(t => t.t !== 'none' && t.r).forEach(t => lines.push(t.r));
+  });
+  if (!lines.length) {
+    const all = [...(day.st||[]),...(day.bt||[]),...(day.jt||[])].filter(t=>t.t!=='none'&&t.r).map(t=>t.r);
+    return all.length ? all.join('；也因為') + '，共同影響了今天的情緒。' : `今天的${EC[key].l}情緒來自整體日常狀態。`;
+  }
+  return lines.join('；也因為') + '。';
+}
+
+// ── tag HTML ──
+function tagBlock(list, bg, tc) {
+  if (!list || !list.filter(t=>t.t!=='none').length) return '';
+  return list.filter(t=>t.t!=='none').map(t =>
+    `<div class="trow"><span class="pill" style="background:${bg};color:${tc};">${TL[t.t]||t.t}</span><span class="rsn">${t.r}</span></div>`
+  ).join('');
+}
+function renderTags(day, el) {
+  let h = '';
+  const s = tagBlock(day.st,'#D85A3022','#D85A30');
+  const b = day.bt&&day.bt.filter(t=>t.t!=='none').length ? tagBlock(day.bt,'#1D9E7522','#1D9E75') : '';
+  const j = tagBlock(day.jt,'#7F77DD22','#7F77DD');
+  if (s) h += `<p class="slbl">壓力來源</p>${s}`;
+  if (b) h += `<p class="slbl">情緒緩衝</p>${b}`;
+  if (j) h += `<p class="slbl">快樂來源</p>${j}`;
+  el.innerHTML = h || '<p class="nodata">這天沒有記錄標籤資料</p>';
+}
+function renderDom(day, el) {
+  el.innerHTML = day.dom.map(k =>
+    `<span class="badge" style="background:${EC[k].c}22;color:${EC[k].c};">${EC[k].l} ${day.e[k]}%</span>`
+  ).join('');
+}
+
+// ── 柱狀圖 ──
+function drawBar(day) {
+  const canvas = document.getElementById('barC');
+  const W = canvas.parentElement.clientWidth || 420;
+  canvas.width = W; canvas.height = 220;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, 220);
+  barHitBoxes = [];
+
+  const keys = Object.keys(EC);
+  const PL=36, PR=10, PT=20, PB=48;
+  const gW = W-PL-PR, gH = 220-PT-PB;
+  const bW = Math.floor(gW/keys.length*0.55);
+  const gap = gW/keys.length;
+
+  [0,25,50,75,100].forEach(v => {
+    const y = PT+gH-(v/100)*gH;
+    ctx.strokeStyle='#f0f0f0'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(PL,y); ctx.lineTo(W-PR,y); ctx.stroke();
+    ctx.fillStyle='#bbb'; ctx.font='11px sans-serif'; ctx.textAlign='right';
+    ctx.fillText(v+'%', PL-4, y+4);
+  });
+
+  keys.forEach((k,i) => {
+    const val = day.e[k];
+    const x = PL+i*gap+(gap-bW)/2;
+    const bH = (val/100)*gH;
+    const y = PT+gH-bH;
+
+    if (bH > 0) {
+      const r = 4;
+      ctx.fillStyle = EC[k].c+'cc';
+      ctx.beginPath();
+      ctx.moveTo(x+r,y); ctx.lineTo(x+bW-r,y);
+      ctx.quadraticCurveTo(x+bW,y,x+bW,y+r);
+      ctx.lineTo(x+bW,y+bH); ctx.lineTo(x,y+bH);
+      ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y);
+      ctx.closePath(); ctx.fill();
+    }
+
+    if (val > 0) {
+      ctx.fillStyle=EC[k].c; ctx.font='11px sans-serif'; ctx.textAlign='center';
+      ctx.fillText(val+'%', x+bW/2, y-5);
+    }
+    ctx.fillStyle='#888'; ctx.font='11px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(EC[k].l, x+bW/2, PT+gH+18);
+
+    barHitBoxes.push({x, y:PT, w:bW, h:gH+PB-10, key:k});
+  });
+}
+
+document.getElementById('barC').addEventListener('click', function(ev) {
+  const rect = this.getBoundingClientRect();
+  const cx = (ev.clientX-rect.left)*(this.width/rect.width);
+  const cy = (ev.clientY-rect.top)*(this.height/rect.height);
+  let hit = null;
+  barHitBoxes.forEach(b => { if(cx>=b.x&&cx<=b.x+b.w&&cy>=b.y&&cy<=b.y+b.h) hit=b; });
+  if (!hit) return;
+  const day = DB[curUser][curDayIdx];
+  const emo = EC[hit.key];
+  document.getElementById('ePopupTitle').innerHTML = `<span style="color:${emo.c};font-weight:600;">${emo.l} ${day.e[hit.key]}%</span>`;
+  document.getElementById('ePopupBody').textContent = getEmoSource(day, hit.key);
+  const p = document.getElementById('ePopup');
+  p.style.display = 'block';
+  p.style.borderLeftColor = emo.c;
+  p.style.background = emo.c+'10';
+  p.scrollIntoView({behavior:'smooth',block:'nearest'});
+});
+
+// ── 綜合情緒分數計算 ──
+const POS_EMO = ["Joy","Trust","Anticipation","Surprise"];
+const NEG_EMO = ["Sadness","Anger","Fear","Disgust"];
+function calcScore(e) {
+  const pos = POS_EMO.reduce((s,k)=>s+(e[k]||0),0);
+  const neg = NEG_EMO.reduce((s,k)=>s+(e[k]||0),0);
+  return Math.max(0, Math.min(100, Math.round(pos*0.6 - neg*0.4 + 50)));
+}
+
+// ── 折線圖（單一分數線 + 可拖動輔助線）──
+let lineXPositions = [];
+let guideX = -1;
+let isDragging = false;
+
+function drawLine() {
+  const days = DB[curUser];
+  const canvas = document.getElementById('lineC');
+  const W = canvas.parentElement.clientWidth || 420;
+  canvas.width = W; canvas.height = 260;
+  const ctx = canvas.getContext('2d');
+  const PL=44,PR=16,PT=20,PB=44;
+  const gW=W-PL-PR, gH=260-PT-PB;
+  lineXPositions = days.map((_,i)=>PL+i*(gW/(days.length-1)));
+
+  if (guideX < 0) guideX = lineXPositions[days.length-1];
+
+  function redraw() {
+    ctx.clearRect(0,0,W,260);
+
+    // grid & y labels
+    [0,25,50,75,100].forEach(v=>{
+      const y=PT+gH-(v/100)*gH;
+      ctx.strokeStyle='#f0f0f0'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(PL,y); ctx.lineTo(W-PR,y); ctx.stroke();
+      ctx.fillStyle='#bbb'; ctx.font='11px sans-serif'; ctx.textAlign='right';
+      ctx.fillText(v+'%',PL-5,y+4);
+    });
+
+    // x labels
+    days.forEach((_,i)=>{
+      const x=lineXPositions[i];
+      ctx.fillStyle='#aaa'; ctx.font='11px sans-serif'; ctx.textAlign='center';
+      ctx.fillText(SHORT_DATES[i],x,260-PB+16);
+    });
+
+    // score points
+    const scores = days.map(d=>calcScore(d.e));
+    const pts = scores.map((s,i)=>({x:lineXPositions[i], y:PT+gH-(s/100)*gH, idx:i}));
+
+    // line only (no fill)
+    ctx.beginPath();
+    ctx.strokeStyle='#7F77DD';
+    ctx.lineWidth=2.5;
+    pts.forEach((p,i)=>i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
+    ctx.stroke();
+
+    // dots
+    pts.forEach(p=>{
+      ctx.beginPath(); ctx.arc(p.x,p.y,5,0,Math.PI*2);
+      ctx.fillStyle='#fff'; ctx.fill();
+      ctx.strokeStyle='#7F77DD'; ctx.lineWidth=2.5; ctx.stroke();
+    });
+
+    // 垂直輔助線
+    const gx = Math.max(PL, Math.min(W-PR, guideX));
+    ctx.beginPath();
+    ctx.strokeStyle='#1a1a1a';
+    ctx.lineWidth=1.5;
+    ctx.setLineDash([4,3]);
+    ctx.moveTo(gx, PT); ctx.lineTo(gx, PT+gH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 找最近的點
+    let nearIdx=0, minD=Infinity;
+    lineXPositions.forEach((x,i)=>{const d=Math.abs(x-gx);if(d<minD){minD=d;nearIdx=i;}});
+    const nx=lineXPositions[nearIdx];
+
+    // 輔助線上的菱形把手
+    ctx.beginPath();
+    const hY=PT+gH+8;
+    ctx.moveTo(gx,hY-7); ctx.lineTo(gx+6,hY); ctx.lineTo(gx,hY+7); ctx.lineTo(gx-6,hY); ctx.closePath();
+    ctx.fillStyle='#1a1a1a'; ctx.fill();
+
+    // 高亮最近節點
+    const ny = pts[nearIdx].y;
+    ctx.beginPath(); ctx.arc(nx,ny,7,0,Math.PI*2);
+    ctx.fillStyle='#7F77DD'; ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.stroke();
+
+    // tooltip
+    const label = SHORT_DATES[nearIdx];
+    ctx.font='12px sans-serif';
+    const tw = ctx.measureText(label).width+16;
+    let tx = gx-tw/2;
+    if(tx<PL) tx=PL;
+    if(tx+tw>W-PR) tx=W-PR-tw;
+    const ty = ny-30;
+    ctx.fillStyle='#1a1a1a';
+    ctx.beginPath();
+    ctx.roundRect(tx,ty,tw,22,5);
+    ctx.fill();
+    ctx.fillStyle='#fff'; ctx.textAlign='left';
+    ctx.fillText(label,tx+8,ty+15);
+
+    // 更新下方卡片
+    const day=DB[curUser][nearIdx];
+    document.getElementById('ddate').textContent=FULL_DATES[nearIdx];
+    document.getElementById('dsub').textContent=day.s;
+    renderDom(day,document.getElementById('ddom'));
+    renderTags(day,document.getElementById('dtags'));
+    document.getElementById('dcard').style.display='block';
+  }
+
+  redraw();
+
+  // 拖動事件
+  const el = canvas;
+  function getX(e){ const r=el.getBoundingClientRect(); return (e.touches?e.touches[0].clientX:e.clientX)-r.left; }
+  el.onmousedown = el.ontouchstart = e=>{ isDragging=true; guideX=getX(e)*(el.width/el.getBoundingClientRect().width); redraw(); e.preventDefault(); };
+  el.onmousemove = el.ontouchmove = e=>{ if(!isDragging)return; guideX=getX(e)*(el.width/el.getBoundingClientRect().width); redraw(); e.preventDefault(); };
+  el.onmouseup = el.ontouchend = ()=>{ isDragging=false; };
+  el.onmouseleave = ()=>{ isDragging=false; };
+}
+
+// ── 主渲染 ──
+function render() {
+  const day = DB[curUser][curDayIdx];
+  document.getElementById('prevBtn').disabled = curDayIdx === 0;
+  document.getElementById('nextBtn').disabled = curDayIdx === 6;
+
+  const year = FULL_DATES[curDayIdx].slice(0, 4);
+  document.getElementById('year-label').textContent = year + ' 年';
+
+  const parts = FULL_DATES[curDayIdx].split('-');
+  const mo = parts[1].replace(/^0/, '') + '月';
+  const da = parts[2].replace(/^0/, '') + '日';
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const isToday = FULL_DATES[curDayIdx] === todayStr;
+  const weekDays = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
+  const dow = new Date(FULL_DATES[curDayIdx]).getDay();
+  const suffix = isToday ? '今天' : weekDays[dow];
+  document.getElementById('p1date').textContent = mo + da + '　' + suffix;
+
+  if (curPage === 1) {
+    document.getElementById('p1sub').textContent = day.s;
+    renderDom(day, document.getElementById('p1dom'));
+    renderTags(day, document.getElementById('p1tags'));
+    setTimeout(() => drawBar(day), 10);
+  } else {
+    guideX = -1;
+    document.getElementById('dcard').style.display='none';
+    setTimeout(() => drawLine(), 10);
+  }
+}
+
+render();
+window.addEventListener('resize', () => {
+  if (curPage===1) drawBar(DB[curUser][curDayIdx]);
+  else drawLine();
+});
+</script>
+</body>
+</html>

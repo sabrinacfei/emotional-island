@@ -1,0 +1,10 @@
+fastapi==0.124.4
+uvicorn[standard]==0.38.0
+motor==3.7.1
+pymongo==4.15.5
+bcrypt==5.0.0
+PyJWT==2.10.1
+pydantic[email]==2.12.5
+python-dotenv==1.2.1
+openai==2.11.0
+requests==2.32.5

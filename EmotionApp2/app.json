@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Emotional Island",
+    "slug": "emotional-island",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/mood_island_icon_white_bg_removed.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "icon": "./assets/mood_island_icon_white_bg_removed.png",
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/mood_island_icon_white_bg_removed.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "apiUrl": "http://192.168.0.124:8000"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-notifications",
+      "expo-secure-store",
+      "expo-video"
+    ]
+  }
+}
