@@ -1194,17 +1194,48 @@ function HomeScreen({ navigation }: any) {
     } catch (e) { console.error(e); } finally { setLoading(false); }
   };
 
+const safeJson = async (res: Response) => {
+  const text = await res.text();
+
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch (err) {
+    console.log('Response is not JSON:', text);
+    return null;
+  }
+};
+
   const fetchNotifications = async () => {
+    if (!token) return;
+
     try {
       const h = { Authorization: `Bearer ${token}` };
+
       const statusRes = await fetch(`${BASE_URL}/daily-diary/today/status`, { headers: h });
-      const statusData = await statusRes.json();
-      setTodayStatus(statusData);
+      const statusData = await safeJson(statusRes);
+
+      if (statusRes.ok && statusData) {
+        setTodayStatus(statusData);
+      } else {
+        console.log('today status failed:', statusRes.status, statusData);
+      }
+
       const res = await fetch(`${BASE_URL}/notifications`, { headers: h });
-      const data = await res.json();
-      setNotifications(Array.isArray(data?.notifications) ? data.notifications : []);
-      setUnreadCount(Number(data?.unread_count || 0));
-    } catch (e) { console.error(e); }
+      const data = await safeJson(res);
+
+      if (res.ok && data) {
+        setNotifications(Array.isArray(data?.notifications) ? data.notifications : []);
+        setUnreadCount(Number(data?.unread_count || 0));
+      } else {
+        console.log('notifications failed:', res.status, data);
+        setNotifications([]);
+        setUnreadCount(0);
+      }
+    } catch (e) {
+      console.error(e);
+      setNotifications([]);
+      setUnreadCount(0);
+    }
   };
 
   const openDiary = () => navigation.navigate('Diary');
@@ -2010,6 +2041,7 @@ function ProfileScreen({ navigation }: any) {
   const [draftGenerateTime, setDraftGenerateTime] = useState(settings.generate_time);
   const [draftWindow, setDraftWindow] = useState(String(settings.edit_window_minutes));
   const [avatarModalVisible, setAvatarModalVisible] = useState(false);
+  const [testingNotification, setTestingNotification] = useState(false);
 
   useEffect(() => { setEditName(username); }, [username]);
   useEffect(() => {
@@ -2061,6 +2093,35 @@ function ProfileScreen({ navigation }: any) {
     if (settingEditor === 'time') await saveSettings({ generate_time: draftGenerateTime });
     if (settingEditor === 'window') await saveSettings({ edit_window_minutes: Number(draftWindow) });
     setSettingEditor(null);
+  };
+
+  const sendTestPhoneNotification = async () => {
+    setTestingNotification(true);
+    try {
+      const registration = await registerForPushNotifications(token);
+      if (!registration.ok) {
+        Alert.alert('手機通知尚未開啟', registration.message);
+        return;
+      }
+      const res = await fetch(`${BASE_URL}/push-token/test`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(result.detail || '雲端後端尚未送出測試通知，請確認已重新部署。');
+      }
+      if (!result.ok) {
+        const reason = Array.isArray(result.errors) ? result.errors.join('\n') : 'Expo 尚未接受這封通知。';
+        Alert.alert('通知送出失敗', reason);
+        return;
+      }
+      Alert.alert('測試通知已送出', '請查看手機通知中心。若沒有出現，請確認你使用的是 EAS 安裝版且已允許通知。');
+    } catch (e: any) {
+      Alert.alert('測試失敗', e?.message || '請確認網路與雲端後端狀態。');
+    } finally {
+      setTestingNotification(false);
+    }
   };
 
   const chooseAvatar = async (key: string) => { setAvatar(key); setAvatarModalVisible(false); };
@@ -2195,6 +2256,15 @@ function ProfileScreen({ navigation }: any) {
                 <Text style={s.settingListSub}>產生後 {settings.edit_window_minutes} 分鐘內可修改</Text>
               </View>
               <Text style={s.settingListValue}>{settings.edit_window_minutes} 分鐘 ›</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.settingListRow} onPress={sendTestPhoneNotification} activeOpacity={0.85} disabled={testingNotification}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.settingListTitle}>手機通知</Text>
+                <Text style={s.settingListSub}>接收小島精靈的整理完成與心情提醒</Text>
+              </View>
+              {testingNotification
+                ? <ActivityIndicator color={C.accent} />
+                : <Text style={s.settingListValue}>傳送測試 ›</Text>}
             </TouchableOpacity>
             <View style={s.settingAccountBox}>
               <Text style={s.settingListTitle}>個人資料</Text>
@@ -2351,11 +2421,15 @@ function RootNavigator() {
   );
 }
 
-async function registerForPushNotifications(authToken: string) {
-  if (!authToken || Platform.OS === 'web') return;
+type PushRegistrationResult = { ok: boolean; message: string; pushToken?: string };
+
+async function registerForPushNotifications(authToken: string): Promise<PushRegistrationResult> {
+  if (!authToken || Platform.OS === 'web') {
+    return { ok: false, message: '此裝置不支援手機推播。' };
+  }
   if (!Device.isDevice) {
     console.log('[push] Expo push notifications need a physical device.');
-    return;
+    return { ok: false, message: '手機推播必須在實體手機上測試。' };
   }
   try {
     if (Platform.OS === 'android') {
@@ -2375,7 +2449,7 @@ async function registerForPushNotifications(authToken: string) {
     }
     if (status !== 'granted') {
       console.log('[push] notification permission not granted');
-      return;
+      return { ok: false, message: '請到 iPhone 的「設定 > 通知 > Emotional Island」允許通知。' };
     }
 
     const constantsAny: any = Constants;
@@ -2386,7 +2460,7 @@ async function registerForPushNotifications(authToken: string) {
     const tokenResult = await Notifications.getExpoPushTokenAsync(
       projectId ? { projectId } : undefined
     );
-    await fetch(`${BASE_URL}/push-token`, {
+    const uploadRes = await fetch(`${BASE_URL}/push-token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
       body: JSON.stringify({
@@ -2395,8 +2469,14 @@ async function registerForPushNotifications(authToken: string) {
         device_id: Device.deviceName || `${Platform.OS}-device`,
       }),
     });
+    if (!uploadRes.ok) {
+      const error = await uploadRes.json().catch(() => ({}));
+      throw new Error(error.detail || '無法將手機通知連結到帳號。');
+    }
+    return { ok: true, message: '手機通知已連結。', pushToken: tokenResult.data };
   } catch (e) {
     console.log('[push] failed to register push token', e);
+    return { ok: false, message: (e as any)?.message || '取得手機推播識別碼失敗。請使用 EAS 安裝版重試。' };
   }
 }
 

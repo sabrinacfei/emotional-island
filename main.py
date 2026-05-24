@@ -137,9 +137,9 @@ def serialize_doc(doc: dict) -> dict:
         out["id"] = str(out.pop("_id"))
     return json_ready(out)
 
-def post_expo_push_messages(messages: list[dict]) -> None:
+def post_expo_push_messages(messages: list[dict]) -> dict:
     if not messages:
-        return
+        return {"data": []}
     payload = json.dumps(messages).encode("utf-8")
     req = urllib.request.Request(
         EXPO_PUSH_URL,
@@ -153,14 +153,18 @@ def post_expo_push_messages(messages: list[dict]) -> None:
     )
     try:
         with urllib.request.urlopen(req, timeout=8) as res:
-            res.read()
-    except urllib.error.URLError as exc:
+            return json.loads(res.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return {"error": f"Expo HTTP {exc.code}", "details": body}
+    except (urllib.error.URLError, TimeoutError) as exc:
         print(f"[push] Expo push failed: {exc}")
+        return {"error": str(exc)}
 
-async def send_push_to_user(uid: ObjectId, notification_doc: dict) -> None:
+async def send_push_to_user(uid: ObjectId, notification_doc: dict) -> dict:
     tokens = await db.push_tokens.find({"userId": uid, "disabled": {"$ne": True}}).to_list(20)
     if not tokens:
-        return
+        return {"ok": False, "sent": 0, "error": "no_registered_device"}
     title = notification_doc.get("title") or "小島精靈通知"
     body = notification_doc.get("message") or "你有一則新的心情提醒。"
     data = {
@@ -180,8 +184,33 @@ async def send_push_to_user(uid: ObjectId, notification_doc: dict) -> None:
                 "body": body,
                 "data": data,
             })
+    responses: list[dict] = []
     for i in range(0, len(messages), 100):
-        await asyncio.to_thread(post_expo_push_messages, messages[i:i + 100])
+        responses.append(await asyncio.to_thread(post_expo_push_messages, messages[i:i + 100]))
+    tickets = [ticket for response in responses for ticket in response.get("data", [])]
+    errors = [response.get("error") for response in responses if response.get("error")]
+    errors.extend(
+        ticket.get("message") or ticket.get("details", {}).get("error", "Expo 拒絕此推播")
+        for ticket in tickets
+        if ticket.get("status") == "error"
+    )
+    outcome = {
+        "ok": not errors,
+        "sent": len(messages),
+        "tickets": tickets,
+        "errors": errors,
+        "sent_at": datetime.now(timezone.utc),
+    }
+    notification_id = notification_doc.get("_id")
+    if isinstance(notification_id, ObjectId):
+        await db.notifications.update_one(
+            {"_id": notification_id, "userId": uid},
+            {"$set": {
+                "push_status": "sent" if outcome["ok"] else "failed",
+                "push_result": json_ready(outcome),
+            }},
+        )
+    return json_ready(outcome)
 
 def today_label() -> str:
     return datetime.now(APP_TZ).strftime("%Y-%m-%d")
@@ -860,6 +889,24 @@ async def register_push_token(data: PushTokenInput, uid: ObjectId = Depends(get_
     )
     await db.users.update_one({"_id": uid}, {"$set": {"push_enabled": True, "updated_at": now}})
     return {"ok": True}
+
+@app.get("/push-token/status")
+async def get_push_token_status(uid: ObjectId = Depends(get_current_user)):
+    count = await db.push_tokens.count_documents({"userId": uid, "disabled": {"$ne": True}})
+    return {"enabled": count > 0, "device_count": count}
+
+@app.post("/push-token/test")
+async def test_push_notification(uid: ObjectId = Depends(get_current_user)):
+    outcome = await send_push_to_user(uid, {
+        "type": "PUSH_TEST",
+        "title": "小島精靈已連線",
+        "message": "手機通知已開啟，之後重要的心情提醒會來到這裡。",
+        "targetScreen": "HomeScreen",
+        "targetParams": {},
+    })
+    if outcome.get("error") == "no_registered_device":
+        raise HTTPException(status_code=400, detail="此帳號尚未綁定手機推播權限，請先允許通知後再試一次。")
+    return outcome
 
 
 # ──────────────────────────────────────────

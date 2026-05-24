@@ -13,20 +13,26 @@
     },
     "ios": {
       "icon": "./assets/mood_island_icon_white_bg_removed.png",
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sabrinacfei.emotionalisland"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/mood_island_icon_white_bg_removed.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.sabrinacfei.emotionalisland"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "extra": {
-      "apiUrl": "https://emotional-island-api.onrender.com"
+      "apiUrl": "https://emotional-island-api.onrender.com",
+      "router": {},
+      "eas": {
+        "projectId": "af485008-e31c-4510-bd53-b3db90bc7088"
+      }
     },
     "plugins": [
       "expo-router",
