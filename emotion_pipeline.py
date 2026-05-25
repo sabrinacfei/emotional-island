@@ -120,6 +120,41 @@ def get_neural_prior(text: str) -> dict:
         }
 
 
+
+def get_remote_neural_prior(text: str) -> dict:
+    api_url = os.getenv("NEURAL_MODEL_API_URL", "").strip()
+
+    if not api_url:
+        return {
+            "available": False,
+            "error": "NEURAL_MODEL_API_URL is not set"
+        }
+
+    try:
+        res = requests.post(
+            api_url,
+            json={"text": text},
+            timeout=90
+        )
+        res.raise_for_status()
+        data = res.json()
+
+        if not data.get("available"):
+            return {
+                "available": False,
+                "error": data.get("error", "remote neural model unavailable"),
+                "raw": data
+            }
+
+        return data
+
+    except Exception as exc:
+        return {
+            "available": False,
+            "error": str(exc)
+        }
+
+
 def to_json(text: str) -> dict:
     """
     嘗試從模型輸出中解析 JSON，失敗時回傳 None。
@@ -253,7 +288,40 @@ def analyze_emotion(diary: str) -> dict:
     if safety_risk == "high":
         return _high_risk_safe_analysis()
 
-    neural_prior = get_neural_prior(diary)
+    neural_prior = get_remote_neural_prior(diary)
+
+    if not neural_prior.get("available"):
+        return {
+            "analysis_available": False,
+            "emotions": {
+                "Joy": 0,
+                "Sadness": 0,
+                "Anger": 0,
+                "Fear": 0,
+                "Anticipation": 0,
+                "Surprise": 0,
+                "Disgust": 0,
+                "Trust": 0
+            },
+            "dominant_emotions": [],
+            "emotional_intensity": 0,
+            "risk_level": "none",
+            "recommend_professional_help": False,
+            "safety_action": "neural_model_unavailable",
+            "analysis_notes": "神經網路模型暫時無法分析，請稍後再試。",
+            "emotion_reasons": {
+                "Joy": "神經網路模型暫時無法分析。",
+                "Sadness": "神經網路模型暫時無法分析。",
+                "Anger": "神經網路模型暫時無法分析。",
+                "Fear": "神經網路模型暫時無法分析。",
+                "Anticipation": "神經網路模型暫時無法分析。",
+                "Surprise": "神經網路模型暫時無法分析。",
+                "Disgust": "神經網路模型暫時無法分析。",
+                "Trust": "神經網路模型暫時無法分析。"
+            },
+            "neural_prior": neural_prior
+        }
+
     neural_block = json.dumps(neural_prior, ensure_ascii=False, indent=2)
     prompt = f"""
 你是情緒分析模組。只輸出 JSON（繁體中文），不要多餘文字。
