@@ -152,6 +152,8 @@ const TREE_POSITIONS = [
   { x: 0.76, y: 0.57 }, { x: 0.40, y: 0.68 }, { x: 0.62, y: 0.66 }, { x: 0.31, y: 0.60 }, { x: 0.70, y: 0.62 },
   { x: 0.45, y: 0.56 }, { x: 0.58, y: 0.58 }, { x: 0.40, y: 0.63 }, { x: 0.68, y: 0.64 }, { x: 0.50, y: 0.52 },
 ];
+const HOME_TREE_LIMIT = 10;
+const HOME_TREE_REFRESH_MS = 30_000;
 
 type TreeRecord = {
   id: string;
@@ -1301,14 +1303,20 @@ function HomeScreen({ navigation }: any) {
   const [birthdayPopup, setBirthdayPopup] = useState<any>(null);
 
   useEffect(() => { const unsub = navigation.addListener('focus', () => { fetchTrees(); fetchNotifications(); }); return unsub; }, [navigation, token]);
-  useEffect(() => { if (token) { fetchTrees(); fetchNotifications(); } }, [token]);
+  useEffect(() => {
+    if (!token) return;
+    fetchTrees();
+    fetchNotifications();
+    const timer = setInterval(fetchTrees, HOME_TREE_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [token]);
 
   const fetchTrees = async () => {
     try {
-      setLoading(true);
       const res = await fetch(`${BASE_URL}/history`, { headers: { 'Authorization': `Bearer ${token}` } });
       const data = await res.json();
-      setTrees((Array.isArray(data) ? data : []).map(toTreeRecord).reverse());
+      const allTrees = (Array.isArray(data) ? data : []).map(toTreeRecord);
+      setTrees(getRecentRecords(allTrees, HOME_TREE_LIMIT));
     } catch (e) { console.error(e); } finally { setLoading(false); }
   };
 
@@ -1462,7 +1470,7 @@ const safeJson = async (res: Response) => {
 
         {!loading && trees.length > 0 && (
           <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
-            {trees.slice(0, 10).map((tree, i) => {
+            {trees.map((tree, i) => {
               const pos = TREE_POSITIONS[i % TREE_POSITIONS.length];
               const treeSize = trees.length > 5 ? 34 : 42;
               return (

@@ -38,12 +38,35 @@ def main() -> None:
     parser.add_argument("--api-url", default=DEFAULT_API_URL)
     parser.add_argument("--email", default="test@test.com")
     parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE)
+    parser.add_argument(
+        "--reanalyze-only",
+        action="store_true",
+        help="Keep existing diary text and overwrite only daily analyses and trends.",
+    )
     args = parser.parse_args()
 
     password = getpass.getpass(f"Password for {args.email}: ")
     auth = request_json(args.api_url, "/login", {"email": args.email, "password": password})
     token = auth["token"]
     days = json.loads(args.fixture.read_text(encoding="utf-8"))["days"]
+
+    if args.reanalyze_only:
+        completed = 0
+        for day in days:
+            result = request_json(
+                args.api_url,
+                "/diary/reanalyze-finalized-days",
+                {"date_labels": [day["date_label"]]},
+                token,
+            )
+            analysis = result["results"][0]
+            neural = analysis.get("neural_prior") or {}
+            neural_status = "NN OK" if neural.get("available") else "NN unavailable"
+            emotions = ", ".join(analysis.get("dominant_emotions") or [])
+            print(f"{analysis['date_label']}: {neural_status} | {emotions}")
+            completed += 1
+        print(f"Reanalyzed {completed} days for {args.email}.")
+        return
 
     for day in days:
         result = request_json(

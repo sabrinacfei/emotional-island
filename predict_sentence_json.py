@@ -47,6 +47,10 @@ LABELS = [
     "surprise",
     "trust",
 ]
+MODEL_MAX_TOKENS = 512
+FIRST_CHUNK_TOKENS = 100
+CHUNK_OVERLAP_TOKENS = 20
+CHUNK_NEW_TOKENS = 20
 
 
 class PlutchikClassifier(nn.Module):
@@ -250,21 +254,45 @@ def load_model(model_dir: Path, device: torch.device):
 
 @torch.no_grad()
 def predict_sentence(text: str, bundle: SimpleNamespace, device: torch.device) -> dict:
-    max_length = int(bundle.config.get("max_length", 128))
-    encoded = bundle.tokenizer(
-        [text],
-        truncation=True,
+    token_ids = bundle.tokenizer.encode(text, add_special_tokens=False)
+    token_chunks = [token_ids[:FIRST_CHUNK_TOKENS]]
+    cursor = FIRST_CHUNK_TOKENS
+    while cursor < len(token_ids):
+        token_chunks.append(
+            token_ids[
+                max(0, cursor - CHUNK_OVERLAP_TOKENS):
+                min(len(token_ids), cursor + CHUNK_NEW_TOKENS)
+            ]
+        )
+        cursor += CHUNK_NEW_TOKENS
+
+    prepared_chunks = [
+        bundle.tokenizer.prepare_for_model(
+            chunk,
+            add_special_tokens=True,
+            truncation=True,
+            max_length=MODEL_MAX_TOKENS,
+            return_attention_mask=True,
+        )
+        for chunk in token_chunks
+    ]
+    encoded = bundle.tokenizer.pad(
+        prepared_chunks,
         padding=True,
-        max_length=max_length,
         return_tensors="pt",
     )
-    encoded = {key: value.to(device) for key, value in encoded.items()}
+    model_inputs = {
+        key: value.to(device)
+        for key, value in encoded.items()
+        if key in {"input_ids", "attention_mask"}
+    }
 
     logits = bundle.model(
-        input_ids=encoded["input_ids"],
-        attention_mask=encoded["attention_mask"],
+        input_ids=model_inputs["input_ids"],
+        attention_mask=model_inputs["attention_mask"],
     )
-    probs = torch.sigmoid(logits.float()).cpu().numpy()
+    chunk_probs = torch.sigmoid(logits.float()).cpu().numpy()
+    probs = chunk_probs.mean(axis=0, keepdims=True)
 
     max_labels = bundle.config.get("max_labels", 4)
     predicted = apply_thresholds(
@@ -286,6 +314,12 @@ def predict_sentence(text: str, bundle: SimpleNamespace, device: torch.device) -
         "top_probability": probabilities[LABELS[top_index]],
         "probabilities": probabilities,
         "thresholds": thresholds,
+        "chunk_count": int(chunk_probs.shape[0]),
+        "model_max_tokens": MODEL_MAX_TOKENS,
+        "first_chunk_tokens": FIRST_CHUNK_TOKENS,
+        "overlap_tokens": CHUNK_OVERLAP_TOKENS,
+        "new_tokens_per_followup_chunk": CHUNK_NEW_TOKENS,
+        "aggregation": "mean_probabilities",
     }
 
 

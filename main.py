@@ -85,6 +85,9 @@ class HistoricalDayImportInput(BaseModel):
     fragments: List[HistoricalFragmentInput]
     replace_existing: bool = True
 
+class HistoricalReanalysisInput(BaseModel):
+    date_labels: List[str]
+
 class DailyDiaryFinalizeInput(BaseModel):
     final_content: str
 
@@ -540,6 +543,7 @@ async def finalize_daily_diary(
     final_content: str,
     auto: bool = False,
     emit_notifications: bool = True,
+    strict_analysis: bool = False,
 ) -> dict:
     if not final_content.strip():
         raise HTTPException(status_code=400, detail="日記內容不可為空")
@@ -565,13 +569,26 @@ async def finalize_daily_diary(
 
         loop = asyncio.get_event_loop()
         emotion = await loop.run_in_executor(None, analyze_emotion, final_content)
+        if emotion.get("analysis_available") is False:
+            neural_error = (emotion.get("neural_prior") or {}).get(
+                "error",
+                "遠端神經網路模型目前無法提供分析",
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=f"神經網路模型暫時無法分析：{neural_error}",
+            )
         tags = await loop.run_in_executor(None, tag_diary, final_content)
 
         risk_level = emotion.get("risk_level", "none")
         mode = determine_mode(risk_level)
         feedback = await loop.run_in_executor(None, user_feedback, final_content, emotion, mode)
 
+    except HTTPException:
+        raise
     except Exception as e:
+        if strict_analysis:
+            raise HTTPException(status_code=503, detail=f"完整分析失敗：{e}") from e
         print(f"[警告] 當日日記 AI 分析失敗：{e}")
         emotion = {
             "emotions": {},
@@ -1339,6 +1356,56 @@ async def import_historical_day(
         "analysis": analysis,
     }
 
+@app.post("/diary/reanalyze-finalized-days")
+async def reanalyze_finalized_days(
+    data: HistoricalReanalysisInput,
+    uid: ObjectId = Depends(get_current_user),
+):
+    """
+    以既有完整日記重新執行情緒分析，只覆寫分析與趨勢。
+    不重建小日記、不新增通知，也不增加成就次數。
+    """
+    date_labels = sorted(set(data.date_labels))
+    if not date_labels:
+        raise HTTPException(status_code=400, detail="請提供至少一個要重新分析的日期")
+    if len(date_labels) > 31:
+        raise HTTPException(status_code=400, detail="單次最多重新分析 31 天")
+
+    today = datetime.now(APP_TZ).date()
+    results = []
+    for date_label in date_labels:
+        target_day = parse_local_date(date_label).date()
+        if target_day >= today:
+            raise HTTPException(status_code=400, detail="重新分析日期必須早於今天")
+
+        daily_doc = await db.daily_diaries.find_one({"userId": uid, "date_label": date_label})
+        if not daily_doc:
+            raise HTTPException(status_code=404, detail=f"{date_label} 找不到完整日記")
+        final_content = (
+            daily_doc.get("final_content")
+            or daily_doc.get("draft_content")
+            or ""
+        ).strip()
+        if not final_content:
+            raise HTTPException(status_code=400, detail=f"{date_label} 沒有可分析的日記內容")
+
+        analysis = await finalize_daily_diary(
+            uid,
+            date_label,
+            final_content,
+            auto=True,
+            emit_notifications=False,
+            strict_analysis=True,
+        )
+        results.append({
+            "date_label": date_label,
+            "analysisId": analysis.get("_id"),
+            "dominant_emotions": analysis.get("dominant_emotions", []),
+            "neural_prior": analysis.get("neural_prior", {}),
+        })
+
+    return {"reanalyzed": len(results), "results": results}
+
 
 # ──────────────────────────────────────────
 # 今日統整日記 API
@@ -1544,7 +1611,7 @@ async def mark_achievements_read(data: NotificationReadInput, uid: ObjectId = De
 @app.get("/history")
 async def get_history(uid: ObjectId = Depends(get_current_user)):
     daily_query = {"userId": uid, "$or": [{"analysis_type": "daily"}, {"daily_content": {"$exists": True}}, {"final_content": {"$exists": True}}]}
-    docs = await db.emotion_analyses.find(daily_query).sort("analyzed_at", -1).to_list(100)
+    docs = await db.emotion_analyses.find(daily_query).sort("date_label", -1).to_list(100)
     if not docs:
         docs = await db.emotion_analyses.find({"userId": uid}).sort("analyzed_at", -1).to_list(100)
     return [serialize_doc(doc) for doc in docs]
