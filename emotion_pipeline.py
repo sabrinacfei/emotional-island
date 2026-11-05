@@ -122,36 +122,72 @@ def get_neural_prior(text: str) -> dict:
 
 
 def get_remote_neural_prior(text: str) -> dict:
-    api_url = os.getenv("NEURAL_MODEL_API_URL", "").strip()
+    api_url = os.getenv("MODERNBERT_WORKER_URL", "").strip()
+    token = os.getenv("MODERNBERT_WORKER_TOKEN", "").strip()
 
     if not api_url:
         return {
             "available": False,
-            "error": "NEURAL_MODEL_API_URL is not set"
+            "error": "MODERNBERT_WORKER_URL is not set"
+        }
+
+    if not token:
+        return {
+            "available": False,
+            "error": "MODERNBERT_WORKER_TOKEN is not set"
+        }
+
+    expected_url = (
+        "https://sabrinaxie-emotional-island-neural-api.hf.space/predict"
+    )
+
+    if api_url != expected_url:
+        return {
+            "available": False,
+            "error": "Unexpected ModernBERT worker URL"
         }
 
     try:
         res = requests.post(
             api_url,
             json={"text": text},
-            timeout=90
+            headers={
+                "Authorization": f"Bearer {token}"
+            },
+            timeout=(10, 120),
+            allow_redirects=False
         )
+
         res.raise_for_status()
         data = res.json()
 
-        if not data.get("available"):
+        if data.get("backend") != "modernbert":
             return {
                 "available": False,
-                "error": data.get("error", "remote neural model unavailable"),
-                "raw": data
+                "error": "Unexpected model backend"
+            }
+
+        if data.get("available") is not True:
+            return {
+                "available": False,
+                "error": data.get(
+                    "error",
+                    "ModernBERT unavailable"
+                )
             }
 
         return data
 
-    except Exception as exc:
+    except requests.RequestException as exc:
         return {
             "available": False,
-            "error": str(exc)
+            "error": f"ModernBERT request failed: {type(exc).__name__}"
+        }
+
+    except ValueError:
+        return {
+            "available": False,
+            "error": "Invalid ModernBERT JSON response"
         }
 
 
