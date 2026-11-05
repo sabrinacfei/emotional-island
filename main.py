@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
 from bson.errors import InvalidId
 from datetime import datetime, timezone, timedelta
@@ -17,13 +19,16 @@ import json
 import re
 import urllib.request
 import urllib.error
-from dotenv import load_dotenv
+from selfhost_config import load_settings
+from slm_client import SelfHostedGenerationError
+from daily_workflow import DailyWorkflow, DEFAULTS as WORKFLOW_DEFAULTS, validate_settings, schedule
+from zoneinfo import ZoneInfo
 
 # ──────────────────────────────────────────
 # 設定
 # ──────────────────────────────────────────
 
-load_dotenv()
+load_settings()
 
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "emotion_tracker_db")
@@ -32,10 +37,11 @@ JWT_EXPIRE_DAYS = 30
 APP_TZ = timezone(timedelta(hours=8))
 DEFAULT_DAILY_SETTINGS = {
     "generate_time": "21:00",
-    "edit_window_minutes": 30,
+    **WORKFLOW_DEFAULTS,
 }
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 CRON_SECRET = os.getenv("CRON_SECRET", "")
+PHONE_SLM_ONLY = os.getenv("PHONE_SLM_ONLY", "1") == "1"
 
 mongo_client = AsyncIOMotorClient(MONGODB_URL)
 db = mongo_client[DATABASE_NAME]
@@ -94,6 +100,9 @@ class DailyDiaryFinalizeInput(BaseModel):
 class DailyDiarySettingsPatch(BaseModel):
     generate_time: Optional[str] = None
     edit_window_minutes: Optional[int] = None
+    confirmation_time: Optional[str] = None
+    allow_auto_finalize: Optional[bool] = None
+    timezone: Optional[str] = None
 
 class NotificationReadInput(BaseModel):
     ids: Optional[List[str]] = None
@@ -463,19 +472,25 @@ async def ensure_profile_notifications(uid: ObjectId) -> None:
         })
 
 async def get_daily_settings_doc(uid: ObjectId) -> dict:
-    doc = await db.daily_diary_settings.find_one({"userId": uid})
-    if doc:
-        return doc
     now = datetime.now(timezone.utc)
-    doc = {
+    default_doc = {
         "userId": uid,
         **DEFAULT_DAILY_SETTINGS,
         "created_at": now,
         "updated_at": now,
     }
-    result = await db.daily_diary_settings.insert_one(doc)
-    doc["_id"] = result.inserted_id
-    return doc
+    try:
+        return await db.daily_diary_settings.find_one_and_update(
+            {"userId": uid},
+            {"$setOnInsert": default_doc},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        doc = await db.daily_diary_settings.find_one({"userId": uid})
+        if doc:
+            return doc
+        raise
 
 async def get_fragments_for_date(uid: ObjectId, date_label: str) -> list[dict]:
     return await db.conversations.find({
@@ -495,6 +510,9 @@ async def compose_daily_draft(fragments: list[dict]) -> str:
     ]
     if not entries:
         return ""
+    if PHONE_SLM_ONLY or any(f.get("processing_mode") == "phone_slm_v1" for f in fragments):
+        # The phone performs semantic analysis; the server only assembles the originals.
+        return "\n\n".join(item["content"] for item in entries)
     try:
         from emotion_pipeline import summarize_daily_fragments
 
@@ -565,46 +583,36 @@ async def finalize_daily_diary(
         })
         daily_doc = await db.daily_diaries.find_one({"_id": result.inserted_id})
 
-
     if phone_analysis is None:
+        settings = await get_daily_settings_doc(uid)
+        if PHONE_SLM_ONLY or settings.get("processing_mode") == "phone_slm_v1":
+            raise HTTPException(409, "請在手機開啟日記完成分析與回饋。")
         try:
             from emotion_pipeline import analyze_emotion, tag_diary, user_feedback, determine_mode
 
             loop = asyncio.get_event_loop()
             emotion = await loop.run_in_executor(None, analyze_emotion, final_content)
             if emotion.get("analysis_available") is False:
-                neural_error = (emotion.get("neural_prior") or {}).get(
-                    "error",
-                    "遠端神經網路模型目前無法提供分析",
-                )
                 raise HTTPException(
                     status_code=503,
-                    detail=f"神經網路模型暫時無法分析：{neural_error}",
+                    detail="本機分類模型暫時無法分析，請檢查模型設定後重試。",
                 )
             tags = await loop.run_in_executor(None, tag_diary, final_content)
 
             risk_level = emotion.get("risk_level", "none")
             mode = determine_mode(risk_level)
             feedback = await loop.run_in_executor(None, user_feedback, final_content, emotion, mode)
+            # Summary screening may escalate risk; persist the final route.
+            risk_level = emotion["risk_level"]
+            mode = determine_mode(risk_level)
 
         except HTTPException:
             raise
-        except Exception as e:
-            if strict_analysis:
-                raise HTTPException(status_code=503, detail=f"完整分析失敗：{e}") from e
-            print(f"[警告] 當日日記 AI 分析失敗：{e}")
-            emotion = {
-                "emotions": {},
-                "dominant_emotions": [],
-                "emotional_intensity": 0,
-                "risk_level": "none",
-                "analysis_notes": "分析失敗",
-                "emotion_reasons": {},
-            }
-            tags = {"stressor_tags": [], "buffer_tags": [], "joy_tags": [], "one_line_summary": ""}
-            risk_level = "none"
-            feedback = "謝謝你願意把今天留下來，小島精靈已經先替你收好。"
-
+        except SelfHostedGenerationError as exc:
+            # Keep this diary editable; never mark a failed SLM analysis finalized.
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        except Exception:
+            raise HTTPException(status_code=503, detail="無法完成分析與安全判斷，日記尚未完成，請稍後重試。") from None
 
     else:
         emotion = phone_analysis["emotion"]
@@ -615,7 +623,7 @@ async def finalize_daily_diary(
 
     raw_scores = emotion.get("emotions", {}) or {}
     scores = {
-        k: round((v / 100) if v > 1 else v, 2)
+        k: round(v / 100, 2)
         for k, v in raw_scores.items()
     }
 
@@ -635,11 +643,10 @@ async def finalize_daily_diary(
         "neural_prior": emotion.get("neural_prior", {}),
         "dominant_emotions": emotion.get("dominant_emotions", []),
         "risk_level": risk_level,
-        "response_mode": mode if phone_analysis is not None else emotion.get("response_mode"),
+        "response_mode": mode,
         "safety_check_status": emotion.get("safety_check_status", "unavailable"),
         "classification_available": emotion.get("classification_available", False),
         "safety_decision": emotion.get("safety_decision", {}),
-
         "emotional_intensity": emotion.get("emotional_intensity", 0),
         "recommend_professional_help": emotion.get("recommend_professional_help", False),
         "safety_action": emotion.get("safety_action", "none"),
@@ -665,7 +672,7 @@ async def finalize_daily_diary(
         "analysis_type": "daily",
     })
     analysis_id = daily_doc.get("analysisId")
-    is_new_tree = not analysis_id and not existing_daily_analysis
+    is_new_tree = bool(scores) and not analysis_id and not existing_daily_analysis
     if analysis_id:
         await db.emotion_analyses.update_one({"_id": analysis_id}, {"$set": analysis_doc})
     else:
@@ -687,7 +694,10 @@ async def finalize_daily_diary(
             "updated_at": now,
         }},
     )
-    await set_daily_trend(uid, date_label, scores, now)
+    if phone_analysis:
+        await db.daily_diaries.update_one({"_id": daily_doc["_id"]}, {"$set": {"workflow_status": "analyzed"}})
+    if scores:
+        await set_daily_trend(uid, date_label, scores, now)
 
     if is_new_tree:
         await record_achievement(uid, "first_planting", 1)
@@ -734,6 +744,8 @@ async def finalize_daily_diary(
 
 async def ensure_daily_diary_for_date(uid: ObjectId, date_label: str) -> Optional[dict]:
     settings = await get_daily_settings_doc(uid)
+    if PHONE_SLM_ONLY or settings.get("processing_mode") == "phone_slm_v1":
+        return await DailyWorkflow(db).ensure(uid, date_label)
     current_local = datetime.now(APP_TZ)
     due_time = scheduled_at(date_label, settings.get("generate_time", "21:00"))
     daily_doc = await db.daily_diaries.find_one({"userId": uid, "date_label": date_label})
@@ -753,7 +765,7 @@ async def ensure_daily_diary_for_date(uid: ObjectId, date_label: str) -> Optiona
                 "draft_content": draft,
                 "status": "editing",
                 "generated_at": now,
-                "editable_until": editable_until_local.astimezone(timezone.utc),
+                "editable_until": None if PHONE_SLM_ONLY or settings.get("processing_mode") == "phone_slm_v1" else editable_until_local.astimezone(timezone.utc),
                 "created_at": now,
                 "updated_at": now,
             })
@@ -762,14 +774,14 @@ async def ensure_daily_diary_for_date(uid: ObjectId, date_label: str) -> Optiona
                 uid,
                 "DAILY_DIARY_EDITABLE",
                 "今日統整日記已產生",
-                "小島精靈已經幫你整理好今天的心情日記了，你還可以在時間內修改內容。",
+                "今天的小日記已彙整成草稿，請開啟 App 完成編輯與手機分析。" if PHONE_SLM_ONLY or settings.get("processing_mode") == "phone_slm_v1" else "小島精靈已經幫你整理好今天的心情日記了，你還可以在時間內修改內容。",
                 "去編輯",
                 "DailyDiaryEditScreen",
                 {"date": date_label},
                 f"daily-editable:{date_label}",
             )
 
-    if daily_doc and daily_doc.get("status") == "editing":
+    if daily_doc and daily_doc.get("status") == "editing" and not PHONE_SLM_ONLY and settings.get("processing_mode") != "phone_slm_v1":
         editable_until = daily_doc.get("editable_until")
         if isinstance(editable_until, datetime) and editable_until.tzinfo is None:
             editable_until = editable_until.replace(tzinfo=timezone.utc)
@@ -784,7 +796,8 @@ async def process_daily_for_user(uid: ObjectId, date_label: str):
         daily_doc = await ensure_daily_diary_for_date(uid, date_label)
         if not daily_doc:
             return
-        if daily_doc.get("status") == "editing":
+        settings = await get_daily_settings_doc(uid)
+        if daily_doc.get("status") == "editing" and not PHONE_SLM_ONLY and settings.get("processing_mode") != "phone_slm_v1":
             editable_until = as_aware_utc(daily_doc.get("editable_until"))
             if editable_until:
                 remaining = editable_until - datetime.now(timezone.utc)
@@ -956,7 +969,11 @@ async def run_due_daily_jobs() -> dict:
     hourly_reminders = 0
     for user in users:
         uid = user["_id"]
-        for date_label in labels:
+        settings = await get_daily_settings_doc(uid)
+        user_now = datetime.now(ZoneInfo(settings.get("timezone", "Asia/Taipei")))
+        user_labels = {user_now.date().isoformat(), (user_now - timedelta(days=1)).date().isoformat()}
+        pending_dates = await db.daily_diaries.distinct("date_label", {"userId": uid, "workflow_status": {"$in": ["pending_aggregation", "awaiting_confirmation", "finalized_pending_analysis"]}})
+        for date_label in user_labels | set(pending_dates):
             checked += 1
             await process_daily_for_user(uid, date_label)
         try:
@@ -988,6 +1005,7 @@ async def lifespan(app: FastAPI):
     await db.users.create_index("email", unique=True)
     await db.emotion_trends.create_index([("userId", 1), ("date_label", 1)], unique=True)
     await db.conversations.create_index([("userId", 1), ("date_label", 1), ("type", 1)])
+    await db.conversations.create_index([("userId", 1), ("mobile_entry_id", 1)], unique=True, partialFilterExpression={"mobile_entry_id": {"$type": "string"}})
     await db.daily_diaries.create_index([("userId", 1), ("date_label", 1)], unique=True)
     await db.daily_diary_settings.create_index("userId", unique=True)
     await db.emotion_analyses.create_index([("userId", 1), ("date_label", 1), ("analysis_type", 1)])
@@ -1018,7 +1036,7 @@ app.add_middleware(
 
 @app.get("/health")
 async def health_check():
-    return {"ok": True, "service": "emotional-island-api"}
+    return {"ok": True, "service": "emotional-island-api", "contract": "phone-slm-v1", "phone_feedback_only": PHONE_SLM_ONLY}
 
 @app.post("/tasks/daily-diary/run")
 async def trigger_due_daily_jobs(_: None = Depends(require_cron_secret)):
@@ -1217,6 +1235,8 @@ async def create_diary(data: DiaryInput, uid: ObjectId = Depends(get_current_use
     使用者可一天寫多則小日記。這裡只儲存與回覆安慰/小建議，
     不做正式情緒分析；正式分析會在每日統整日記完成後產生。
     """
+    if PHONE_SLM_ONLY:
+        raise HTTPException(409, "請更新手機 App，以使用雲端分類與手機本機回饋。")
     if not data.content.strip():
         raise HTTPException(status_code=400, detail="日記內容不可為空")
 
@@ -1228,15 +1248,8 @@ async def create_diary(data: DiaryInput, uid: ObjectId = Depends(get_current_use
 
         loop = asyncio.get_event_loop()
         support = await loop.run_in_executor(None, quick_support, data.content)
-    except Exception as e:
-        print(f"[警告] 小日記陪伴回覆失敗：{e}")
-        support = {
-            "comfort": "謝謝你願意把這段心情交給小島精靈，今天先讓自己慢一點也可以。",
-            "suggestions": ["喝一點水", "做三次慢慢的深呼吸", "讓眼睛休息一分鐘"],
-            "blessing": "小島精靈會先把這段心情收好，晚點再陪你整理成今天的故事。",
-            "risk_level": "none",
-            "safety_action": "none",
-        }
+    except Exception:
+        raise HTTPException(status_code=503, detail="暫時無法完成安全判斷，請稍後重試。") from None
 
     conv_doc = {
         "userId": uid,
@@ -1250,6 +1263,9 @@ async def create_diary(data: DiaryInput, uid: ObjectId = Depends(get_current_use
         "blessing": support.get("blessing", ""),
         "risk_level": support.get("risk_level", "none"),
         "safety_action": support.get("safety_action", "none"),
+        "response_mode": support.get("response_mode", "SAFE_MODE"),
+        "safety_check_status": support.get("safety_check_status", "unavailable"),
+        "classification_available": support.get("classification_available", False),
         "timestamp": now,
         "created_at": now,
     }
@@ -1435,11 +1451,12 @@ async def reanalyze_finalized_days(
 
 @app.get("/daily-diary/today/status")
 async def get_today_daily_diary_status(uid: ObjectId = Depends(get_current_user)):
-    date_str = today_label()
+    settings = await get_daily_settings_doc(uid)
+    date_str = datetime.now(ZoneInfo(settings.get("timezone", "Asia/Taipei"))).date().isoformat()
     daily = await ensure_daily_diary_for_date(uid, date_str)
     fragments = await get_fragments_for_date(uid, date_str)
     settings = await get_daily_settings_doc(uid)
-    due_time = scheduled_at(date_str, settings.get("generate_time", "21:00"))
+    due_time, confirmation_deadline = schedule(date_str, settings)
 
     return {
         "date": date_str,
@@ -1447,7 +1464,8 @@ async def get_today_daily_diary_status(uid: ObjectId = Depends(get_current_user)
         "daily_diary": serialize_doc(daily) if daily else None,
         "settings": serialize_doc(settings),
         "scheduled_at": due_time.isoformat(),
-        "is_due": datetime.now(APP_TZ) >= due_time,
+        "is_due": datetime.now(timezone.utc) >= due_time,
+        "confirmation_deadline": confirmation_deadline.isoformat(),
     }
 
 
@@ -1466,6 +1484,11 @@ async def update_daily_diary_settings(data: DailyDiarySettingsPatch, uid: Object
         if data.edit_window_minutes not in [15, 30, 45, 60, 90, 120]:
             raise HTTPException(status_code=400, detail="可編輯時間需為 15、30、45、60、90 或 120 分鐘")
         patch["edit_window_minutes"] = data.edit_window_minutes
+    for key in ("confirmation_time", "allow_auto_finalize", "timezone"):
+        value = getattr(data, key)
+        if value is not None:
+            patch[key] = value
+    validate_settings({**(await get_daily_settings_doc(uid)), **patch})
     if not patch:
         return serialize_doc(await get_daily_settings_doc(uid))
 
@@ -1485,6 +1508,8 @@ async def finalize_daily_diary_endpoint(
     uid: ObjectId = Depends(get_current_user),
 ):
     parse_local_date(date_label)
+    if PHONE_SLM_ONLY:
+        return serialize_doc(await DailyWorkflow(db).confirm(uid, date_label, data.final_content))
     daily_doc = await ensure_daily_diary_for_date(uid, date_label)
     if daily_doc:
         if daily_doc.get("status") == "finalized":
@@ -1634,8 +1659,6 @@ async def mark_achievements_read(data: NotificationReadInput, uid: ObjectId = De
 async def get_history(uid: ObjectId = Depends(get_current_user)):
     daily_query = {"userId": uid, "$or": [{"analysis_type": "daily"}, {"daily_content": {"$exists": True}}, {"final_content": {"$exists": True}}]}
     docs = await db.emotion_analyses.find(daily_query).sort("date_label", -1).to_list(100)
-    if not docs:
-        docs = await db.emotion_analyses.find({"userId": uid}).sort("analyzed_at", -1).to_list(100)
     return [serialize_doc(doc) for doc in docs]
 
 
@@ -1669,10 +1692,23 @@ async def get_trends(uid: ObjectId = Depends(get_current_user)):
     return result
 
 
-# Mobile API: cloud ModernBERT classification + on-device Qwen feedback
+# Phone SLM: cloud classifier only; feedback generation never invokes GPT/Ollama.
+_phone_commit_locks = {}
+
 async def save_phone_entry(uid, request, result):
+    key = (str(uid), request.date_label if request.kind == "daily" else request.entry_id)
+    lock = _phone_commit_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        return await _save_phone_entry(uid, request, result)
+
+async def _save_phone_entry(uid, request, result):
+    if request.kind == "daily":
+        await DailyWorkflow(db).require_final(uid, request.date_label, request.content)
+        completed = await db.daily_diaries.find_one({"userId": uid, "date_label": request.date_label, "workflow_status": "analyzed"})
+        if completed and completed.get("analysisId"):
+            return {"synced": True, "entry_id": request.entry_id, "record": serialize_doc(await db.emotion_analyses.find_one({"_id": completed["analysisId"]}))}
     existing = await db.conversations.find_one({"userId": uid, "mobile_entry_id": request.entry_id}) if request.kind == "fragment" else await db.emotion_analyses.find_one({"userId": uid, "mobile_entry_id": request.entry_id})
-    if existing:
+    if existing and (request.kind != "fragment" or existing.get("support_status") == "completed"):
         stored_content = existing.get("content", existing.get("daily_content", ""))
         if stored_content != request.content.strip():
             raise HTTPException(409, "這筆同步識別碼已用於不同日記。")
@@ -1685,18 +1721,20 @@ async def save_phone_entry(uid, request, result):
     common = {**result, "mobile_entry_id": request.entry_id, "processing_mode": "phone_slm_v1"}
     if request.kind == "fragment":
         doc = {**common, "userId": uid, "type": "fragment", "status": "saved", "date_label": date_label,
-               "content": request.content.strip(), "ai_response": result["comfort"], "timestamp": now, "created_at": now}
-        inserted = await db.conversations.insert_one(doc)
-        return {"synced": True, "entry_id": request.entry_id, "fragmentId": str(inserted.inserted_id)}
+               "content": request.content.strip(), "ai_response": result["comfort"], "timestamp": existing.get("timestamp", now) if existing else now, "created_at": existing.get("created_at", now) if existing else now, "support_status": "completed"}
+        if existing:
+            doc["date_label"] = existing["date_label"]
+        saved = await db.conversations.find_one_and_update({"userId": uid, "mobile_entry_id": request.entry_id}, {"$set": doc}, upsert=True, return_document=ReturnDocument.AFTER)
+        return {"synced": True, "entry_id": request.entry_id, "fragmentId": str(saved["_id"])}
     raw_emotion = {"emotions": scores, "dominant_emotions": sorted(scores, key=scores.get, reverse=True)[:3],
                    "emotional_intensity": None, "risk_level": result["risk_level"], "response_mode": result["response_mode"],
                    "safety_action": result["safety_action"], "classification_available": result["classification_available"],
                    "safety_check_status": result["safety_check_status"], "safety_decision": result["safety_decision"],
                    "recommend_professional_help": result["risk_level"] in {"moderate", "high"},
                    "analysis_notes": context.get("emotional_context", "本次採用固定安全回應。"),
-                   "emotion_reasons": {}, "neural_prior": {"available": bool(scores), "backend": "modernbert", "scores": scores, **(result.get("classifier_analysis") or {})}}
+                   "emotion_reasons": {emotion: c["explanation"] for c in result.get("causes", []) for emotion in c["emotions"]}, "neural_prior": {"available": bool(scores), "backend": "modernbert", "scores": scores, **(result.get("classifier_analysis") or {})}}
     prepared = {"emotion": raw_emotion,
-                "tags": {"stressor_tags": [], "buffer_tags": [], "joy_tags": [], "one_line_summary": context.get("event_context", "本次採用固定安全回應。")},
+                "tags": {**{kind + "_tags": [{"tag": c["topic"], "reason": c["explanation"], "evidence": c["evidence"]} for c in result.get("causes", []) if c["type"] == kind] for kind in ("stressor", "buffer", "joy")}, "one_line_summary": context.get("event_context", "本次採用固定安全回應。")},
                 "feedback": result["comfort"] + ("\n" + "\n".join(result["suggestions"]) if result["suggestions"] else ""),
                 "metadata": {k: v for k, v in common.items() if k != "scores"}}
     record = await finalize_daily_diary(uid, date_label, request.content, phone_analysis=prepared)
@@ -1704,4 +1742,6 @@ async def save_phone_entry(uid, request, result):
 
 
 from mobile_feedback import router as phone_router
-app.include_router(phone_router(get_current_user, save_phone_entry, JWT_SECRET))
+app.include_router(phone_router(get_current_user, save_phone_entry, JWT_SECRET, require_final=DailyWorkflow(db).require_final))
+from mobile_workflow_api import router as workflow_router
+app.include_router(workflow_router(db, get_current_user, serialize_doc))

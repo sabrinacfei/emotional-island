@@ -19,6 +19,7 @@ from modernbert_chunking import LABELS
 class Input(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     content: str = Field(min_length=1, max_length=12000)
+    date_label: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
 class NativeGeneration(BaseModel):
@@ -34,6 +35,15 @@ class NativeGeneration(BaseModel):
     raw_text: str = Field(min_length=1, max_length=12000)
 
 
+class Cause(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    type: Literal["stressor", "buffer", "joy"]
+    topic: str = Field(min_length=1, max_length=40)
+    explanation: str = Field(min_length=1, max_length=180)
+    evidence: str = Field(min_length=2, max_length=160)
+    emotions: list[Literal["Anger", "Anticipation", "Disgust", "Fear", "Joy", "Sadness", "Surprise", "Trust"]] = Field(min_length=1, max_length=3)
+
+
 class PhoneSupport(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     status: Literal["completed", "local_safety"]
@@ -45,6 +55,7 @@ class PhoneSupport(BaseModel):
     safety_action: Literal["none", "encourage_support", "urgent_help"]
     context: dict[str, str] | None
     generation: NativeGeneration | None
+    causes: list[Cause] = Field(default_factory=list, max_length=3)
 
 
 class Commit(Input):
@@ -59,7 +70,7 @@ def digest(content: str) -> str:
     return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
 
 
-def router(current_user, save_entry, secret: str, classifier=None) -> APIRouter:
+def router(current_user, save_entry, secret: str, classifier=None, require_final=None) -> APIRouter:
     api = APIRouter(prefix="/mobile", tags=["Phone SLM"])
     if classifier is None:
         from classifier_gateway import predict
@@ -69,6 +80,7 @@ def router(current_user, save_entry, secret: str, classifier=None) -> APIRouter:
     async def classify(data: Input, uid=Depends(current_user)):
         if not data.content.strip():
             raise HTTPException(422, "日記內容不可為空。")
+        revision = await require_final(uid, data.date_label, data.content) if require_final else digest(data.content)
         floor = detect_safety_risk(data.content)
         if floor == "high":
             return {"backend": "modernbert", "classification_available": False, "scores": None,
@@ -89,7 +101,7 @@ def router(current_user, save_entry, secret: str, classifier=None) -> APIRouter:
         now = datetime.now(timezone.utc)
         # The commit consumes the server's scores, never client-supplied replacements.
         receipt = jwt.encode({"sub": str(uid), "aud": "phone-emotions-v1", "exp": now + timedelta(hours=24),
-                              "iat": now, "input_sha256": digest(data.content), "scores": scores,
+                              "iat": now, "date_label": data.date_label, "final_revision": revision, "input_sha256": digest(data.content), "scores": scores,
                               "risk_floor": floor, "classifier": "modernbert-lora", "analysis": analysis}, secret, algorithm="HS256")
         return {"backend": "modernbert", "classification_available": True, "scores": scores,
                 "receipt_token": receipt, "risk_floor": floor, "preprocessing_max_tokens": 128, "analysis": analysis}
@@ -99,11 +111,15 @@ def router(current_user, save_entry, secret: str, classifier=None) -> APIRouter:
         floor = detect_safety_risk(data.content)
         scores = None
         analysis = None
+        if data.kind == "fragment" and data.receipt_token:
+            raise HTTPException(422, "小日記不接受正式分類結果。")
+        if data.kind == "daily" and require_final:
+            await require_final(uid, data.date_label, data.content)
         if data.receipt_token:
             try:
                 receipt = jwt.decode(data.receipt_token, secret, algorithms=["HS256"], audience="phone-emotions-v1",
                                      options={"require": ["sub", "exp", "input_sha256", "scores", "risk_floor", "classifier", "analysis"]})
-                if (receipt["sub"] != str(uid) or receipt["classifier"] != "modernbert-lora"
+                if (receipt["sub"] != str(uid) or receipt.get("date_label") != data.date_label or receipt["classifier"] != "modernbert-lora"
                         or not hmac.compare_digest(receipt["input_sha256"], digest(data.content))):
                     raise ValueError("Classifier receipt does not match diary/user")
                 scores = Scores.model_validate(receipt["scores"]).model_dump()
@@ -113,7 +129,7 @@ def router(current_user, save_entry, secret: str, classifier=None) -> APIRouter:
                 floor = decide(floor, receipt["risk_floor"]).risk_level
             except Exception:
                 raise HTTPException(409, "分類紀錄已過期或與日記不符，請重新分析。") from None
-        elif floor != "high":
+        elif data.kind == "daily" and floor != "high":
             raise HTTPException(409, "缺少有效的 ModernBERT 分類紀錄。")
         route = decide(floor, data.support.risk_level)
         if route.risk_level != data.support.risk_level or route.response_mode != data.support.response_mode or route.safety_action != data.support.safety_action:
@@ -127,6 +143,10 @@ def router(current_user, save_entry, secret: str, classifier=None) -> APIRouter:
         if route.risk_level != "high" and (not data.support.context or set(data.support.context) != context_keys
                 or any(not v.strip() or len(v) > 180 for v in data.support.context.values())):
             raise HTTPException(422, "語境資料不完整。")
+        if data.kind == "fragment" and data.support.causes:
+            raise HTTPException(422, "小日記不建立正式情緒成因。")
+        if any(c.evidence not in data.content for c in data.support.causes):
+            raise HTTPException(422, "情緒成因缺少原文依據。")
         support = data.support.model_dump()
         if route.risk_level == "high":
             # Fixed server copy as well: do not persist arbitrary high-risk free generation.
