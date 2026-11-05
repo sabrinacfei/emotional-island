@@ -544,6 +544,7 @@ async def finalize_daily_diary(
     auto: bool = False,
     emit_notifications: bool = True,
     strict_analysis: bool = False,
+    phone_analysis: Optional[dict] = None,
 ) -> dict:
     if not final_content.strip():
         raise HTTPException(status_code=400, detail="日記內容不可為空")
@@ -564,49 +565,62 @@ async def finalize_daily_diary(
         })
         daily_doc = await db.daily_diaries.find_one({"_id": result.inserted_id})
 
-    try:
-        from emotion_pipeline import analyze_emotion, tag_diary, user_feedback, determine_mode
 
-        loop = asyncio.get_event_loop()
-        emotion = await loop.run_in_executor(None, analyze_emotion, final_content)
-        if emotion.get("analysis_available") is False:
-            neural_error = (emotion.get("neural_prior") or {}).get(
-                "error",
-                "遠端神經網路模型目前無法提供分析",
-            )
-            raise HTTPException(
-                status_code=503,
-                detail=f"神經網路模型暫時無法分析：{neural_error}",
-            )
-        tags = await loop.run_in_executor(None, tag_diary, final_content)
+    if phone_analysis is None:
+        try:
+            from emotion_pipeline import analyze_emotion, tag_diary, user_feedback, determine_mode
 
-        risk_level = emotion.get("risk_level", "none")
-        mode = determine_mode(risk_level)
-        feedback = await loop.run_in_executor(None, user_feedback, final_content, emotion, mode)
+            loop = asyncio.get_event_loop()
+            emotion = await loop.run_in_executor(None, analyze_emotion, final_content)
+            if emotion.get("analysis_available") is False:
+                neural_error = (emotion.get("neural_prior") or {}).get(
+                    "error",
+                    "遠端神經網路模型目前無法提供分析",
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"神經網路模型暫時無法分析：{neural_error}",
+                )
+            tags = await loop.run_in_executor(None, tag_diary, final_content)
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        if strict_analysis:
-            raise HTTPException(status_code=503, detail=f"完整分析失敗：{e}") from e
-        print(f"[警告] 當日日記 AI 分析失敗：{e}")
-        emotion = {
-            "emotions": {},
-            "dominant_emotions": [],
-            "emotional_intensity": 0,
-            "risk_level": "none",
-            "analysis_notes": "分析失敗",
-            "emotion_reasons": {},
-        }
-        tags = {"stressor_tags": [], "buffer_tags": [], "joy_tags": [], "one_line_summary": ""}
-        risk_level = "none"
-        feedback = "謝謝你願意把今天留下來，小島精靈已經先替你收好。"
+            risk_level = emotion.get("risk_level", "none")
+            mode = determine_mode(risk_level)
+            feedback = await loop.run_in_executor(None, user_feedback, final_content, emotion, mode)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            if strict_analysis:
+                raise HTTPException(status_code=503, detail=f"完整分析失敗：{e}") from e
+            print(f"[警告] 當日日記 AI 分析失敗：{e}")
+            emotion = {
+                "emotions": {},
+                "dominant_emotions": [],
+                "emotional_intensity": 0,
+                "risk_level": "none",
+                "analysis_notes": "分析失敗",
+                "emotion_reasons": {},
+            }
+            tags = {"stressor_tags": [], "buffer_tags": [], "joy_tags": [], "one_line_summary": ""}
+            risk_level = "none"
+            feedback = "謝謝你願意把今天留下來，小島精靈已經先替你收好。"
+
+
+    else:
+        emotion = phone_analysis["emotion"]
+        tags = phone_analysis["tags"]
+        feedback = phone_analysis["feedback"]
+        risk_level = emotion["risk_level"]
+        mode = emotion["response_mode"]
 
     raw_scores = emotion.get("emotions", {}) or {}
     scores = {
         k: round((v / 100) if v > 1 else v, 2)
         for k, v in raw_scores.items()
     }
+
+    if phone_analysis and phone_analysis["metadata"].get("classifier_analysis"):
+        scores = phone_analysis["metadata"]["classifier_analysis"]["probabilities"]
 
     analysis_doc = {
         "userId": uid,
@@ -621,6 +635,11 @@ async def finalize_daily_diary(
         "neural_prior": emotion.get("neural_prior", {}),
         "dominant_emotions": emotion.get("dominant_emotions", []),
         "risk_level": risk_level,
+        "response_mode": mode if phone_analysis is not None else emotion.get("response_mode"),
+        "safety_check_status": emotion.get("safety_check_status", "unavailable"),
+        "classification_available": emotion.get("classification_available", False),
+        "safety_decision": emotion.get("safety_decision", {}),
+
         "emotional_intensity": emotion.get("emotional_intensity", 0),
         "recommend_professional_help": emotion.get("recommend_professional_help", False),
         "safety_action": emotion.get("safety_action", "none"),
@@ -636,6 +655,9 @@ async def finalize_daily_diary(
         "analyzed_at": now,
         "updated_at": now,
     }
+
+    if phone_analysis is not None:
+        analysis_doc.update(phone_analysis["metadata"])
 
     existing_daily_analysis = await db.emotion_analyses.find_one({
         "userId": uid,
@@ -1645,3 +1667,41 @@ async def get_trends(uid: ObjectId = Depends(get_current_user)):
 
         result.append(serialize_doc(doc))
     return result
+
+
+# Mobile API: cloud ModernBERT classification + on-device Qwen feedback
+async def save_phone_entry(uid, request, result):
+    existing = await db.conversations.find_one({"userId": uid, "mobile_entry_id": request.entry_id}) if request.kind == "fragment" else await db.emotion_analyses.find_one({"userId": uid, "mobile_entry_id": request.entry_id})
+    if existing:
+        stored_content = existing.get("content", existing.get("daily_content", ""))
+        if stored_content != request.content.strip():
+            raise HTTPException(409, "這筆同步識別碼已用於不同日記。")
+        return {"synced": True, "entry_id": request.entry_id, "record": serialize_doc(existing)}
+    await db.daily_diary_settings.update_one({"userId": uid}, {"$set": {"processing_mode": "phone_slm_v1"}}, upsert=True)
+    now = datetime.now(timezone.utc)
+    date_label = request.date_label or today_label()
+    context = result.get("context") or {}
+    scores = result["scores"] or {}
+    common = {**result, "mobile_entry_id": request.entry_id, "processing_mode": "phone_slm_v1"}
+    if request.kind == "fragment":
+        doc = {**common, "userId": uid, "type": "fragment", "status": "saved", "date_label": date_label,
+               "content": request.content.strip(), "ai_response": result["comfort"], "timestamp": now, "created_at": now}
+        inserted = await db.conversations.insert_one(doc)
+        return {"synced": True, "entry_id": request.entry_id, "fragmentId": str(inserted.inserted_id)}
+    raw_emotion = {"emotions": scores, "dominant_emotions": sorted(scores, key=scores.get, reverse=True)[:3],
+                   "emotional_intensity": None, "risk_level": result["risk_level"], "response_mode": result["response_mode"],
+                   "safety_action": result["safety_action"], "classification_available": result["classification_available"],
+                   "safety_check_status": result["safety_check_status"], "safety_decision": result["safety_decision"],
+                   "recommend_professional_help": result["risk_level"] in {"moderate", "high"},
+                   "analysis_notes": context.get("emotional_context", "本次採用固定安全回應。"),
+                   "emotion_reasons": {}, "neural_prior": {"available": bool(scores), "backend": "modernbert", "scores": scores, **(result.get("classifier_analysis") or {})}}
+    prepared = {"emotion": raw_emotion,
+                "tags": {"stressor_tags": [], "buffer_tags": [], "joy_tags": [], "one_line_summary": context.get("event_context", "本次採用固定安全回應。")},
+                "feedback": result["comfort"] + ("\n" + "\n".join(result["suggestions"]) if result["suggestions"] else ""),
+                "metadata": {k: v for k, v in common.items() if k != "scores"}}
+    record = await finalize_daily_diary(uid, date_label, request.content, phone_analysis=prepared)
+    return {"synced": True, "entry_id": request.entry_id, "record": record}
+
+
+from mobile_feedback import router as phone_router
+app.include_router(phone_router(get_current_user, save_phone_entry, JWT_SECRET))
