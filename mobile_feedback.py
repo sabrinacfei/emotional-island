@@ -72,21 +72,21 @@ def digest(content: str) -> str:
 
 def router(current_user, save_entry, secret: str, classifier=None, require_final=None) -> APIRouter:
     api = APIRouter(prefix="/mobile", tags=["Phone SLM"])
-    if classifier is None:
-        from classifier_gateway import predict
-        classifier = predict
-
     @api.post("/emotions")
     async def classify(data: Input, uid=Depends(current_user)):
-        if not data.content.strip():
-            raise HTTPException(422, "日記內容不可為空。")
+        if not data.content.strip() or not data.date_label:
+            raise HTTPException(422, "正式分類需要每日日記日期與定稿內容。")
         revision = await require_final(uid, data.date_label, data.content) if require_final else digest(data.content)
         floor = detect_safety_risk(data.content)
         if floor == "high":
             return {"backend": "modernbert", "classification_available": False, "scores": None,
                     "receipt_token": None, "risk_floor": "high"}
         try:
-            prior = await asyncio.to_thread(classifier, data.content.strip())
+            provider = classifier
+            if provider is None:
+                from classifier_gateway import predict
+                provider = predict
+            prior = await asyncio.to_thread(provider, data.content.strip())
             scores = Scores.model_validate(prior["scores"]).model_dump()
             if not prior.get("available") or prior.get("backend") != "modernbert" or sum(scores.values()) != 100:
                 raise ValueError("Invalid classifier result")

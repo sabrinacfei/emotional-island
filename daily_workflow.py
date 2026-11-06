@@ -74,6 +74,11 @@ class DailyWorkflow:
             await self.db.daily_diaries.update_one({"_id": doc["_id"], "workflow_status": {"$exists": False}},
                 {"$set": {"workflow_status": state, "confirmation_deadline": deadline, "timezone": settings["timezone"]}})
             doc = await self.db.daily_diaries.find_one({"_id": doc["_id"]})
+        if (doc.get("workflow_status") == "awaiting_confirmation"
+                and doc.get("source_diary_ids") != [str(x["_id"]) for x in fragments]):
+            await self.db.daily_diaries.update_one({"_id": doc["_id"], "workflow_status": "awaiting_confirmation"},
+                {"$set": {"workflow_status": "pending_aggregation", "previous_draft": doc.get("draft_content", ""), "updated_at": now}})
+            doc = await self.db.daily_diaries.find_one({"_id": doc["_id"]})
         if (doc.get("workflow_status") == "awaiting_confirmation" and settings["allow_auto_finalize"]
                 and now >= aware(doc.get("confirmation_deadline", deadline))):
             doc = await self.confirm(uid, day, doc["draft_content"], auto=True)
