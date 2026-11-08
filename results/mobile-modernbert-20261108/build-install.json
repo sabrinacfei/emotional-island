@@ -1,0 +1,11 @@
+{
+  "release_build_exit_code": 0,
+  "installed_in_place": true,
+  "device": "iPhone 16 Pro",
+  "ios": "26.6.2",
+  "qwen_file_preserved": true,
+  "phone_acceptance": "passed",
+  "name_preservation_prompt_update_installed": true,
+  "gesture_root_initialized": true,
+  "in_place_update_and_model_preservation_verified": true
+}

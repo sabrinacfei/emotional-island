@@ -1,0 +1,36 @@
+✔ restores only the newest failed fragment and retains older originals (50.222458ms)
+✔ a newer success, including unsynced feedback, suppresses an older failure (9.863583ms)
+✔ recovers an interrupted draft without mixing accounts or daily summaries (3.720833ms)
+✔ local notification schedules with foreground content without requesting a push token or network (3.988541ms)
+✔ denied notification permission never schedules and never asks again when prohibited (2.364ms)
+✔ a first request can grant permission; rejected requests do not claim a sent test (4.1375ms)
+✔ provisional and ephemeral iOS grants are usable; provisional status explains quiet delivery (4.628125ms)
+✔ Android channel exists before permissions and scheduling; web clearly rejects (3.411041ms)
+✔ network requests abort on timeouts and release their timer after success (8.264209ms)
+✔ cloud scores and the complete diary reach both local stages in order (1.389792ms)
+✔ local Qwen receives original names and accepts named context and feedback (0.138042ms)
+✔ overlap analysis and corrected weights reach local feedback without changing classifier scores (0.120083ms)
+✔ native classification completes without a cloud receipt and preserves its source (0.146375ms)
+✔ a missing or invalid native source never becomes a completed classification (0.146542ms)
+✔ encoder and generation tasks cannot occupy native inference concurrently (1.1575ms)
+✔ explicit high risk uses a fixed local response without classifier or generation (0.062292ms)
+✔ semantic high risk stops after assessment and before free response generation (0.085875ms)
+✔ rule and server risk floors cannot be downgraded by the SLM (0.149584ms)
+✔ unavailable classifier, invalid distributions and unknown risk never produce ordinary feedback (0.187167ms)
+✔ bad assessments and invented evidence fail closed before response generation (0.118125ms)
+✔ a listening preference does not receive forced suggestions or a fabricated blessing (0.0805ms)
+✔ fragment support runs native assessment and response without any cloud scores (0.084292ms)
+✔ verified empty thinking and assistant prefixes preserve valid JSON but never reasoning (0.274792ms)
+✔ seven-day paths keep missing dates distinct from real zero scores (0.098291ms)
+✔ daily composition synthesizes all chronological originals in one generation (5.388958ms)
+✔ long diary reduction always runs a final synthesis rather than returning joined fragments (0.147166ms)
+✔ composition errors preserve originals and never masquerade as a completed daily draft (0.240834ms)
+✔ already converted percentages containing a one-percent emotion are never scaled twice (0.113ms)
+ℹ tests 28
+ℹ suites 0
+ℹ pass 28
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 311.530792

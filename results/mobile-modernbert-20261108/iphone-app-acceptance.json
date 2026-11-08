@@ -1,0 +1,160 @@
+{
+  "synthetic": true,
+  "device": "iPhone 16 Pro",
+  "ios": "26.6.2",
+  "release_app_full_workflow_passed": true,
+  "classifier_execution": "on-device",
+  "classifier_provenance": "client_reported_native_classifier",
+  "classifier_trace": {
+    "duration_ms": 1456.313416652847,
+    "execution": "on-device",
+    "input_sha256": "f50724ca958606ddbb308e6c78f87884c18093a60f1029797db85e88cab11369",
+    "load_ms": 1311.2660833867267,
+    "model": "modernbert-lora-coreml-fp16-v1",
+    "model_sha256": "4e1c697eb572327ea80d8e70a74172dcfe94807a31ecbb72eb37c5e91a0bfbae",
+    "runtime": "coreml",
+    "tokenizer_sha256": "fe530b837c912faf33acd6b1a15a46234259519acb967ead693c692cc2e93647"
+  },
+  "classifier_analysis": {
+    "aggregation": {
+      "max_input_tokens": 128,
+      "method": "overlap_coverage_weighted_mean",
+      "observed_overlap_tokens": 32,
+      "overlap_tokens": 32,
+      "processed_content_tokens": 324,
+      "special_and_padding_tokens_in_weight": false,
+      "unique_content_tokens": 260,
+      "weight_sum": 260,
+      "weighting": "inverse_token_coverage"
+    },
+    "chunk_count": 3,
+    "chunks": [
+      {
+        "aggregation_weight": 110,
+        "effective_tokens": 126,
+        "end_token": 126,
+        "index": 0,
+        "input_tokens": 128,
+        "new_tokens": 126,
+        "overlap_tokens": 0,
+        "probabilities": {
+          "Anger": 0.0017978670075535774,
+          "Anticipation": 0.1612078845500946,
+          "Disgust": 0.0004163247358519584,
+          "Fear": 0.10088130831718445,
+          "Joy": 0.6264798045158386,
+          "Sadness": 0.01015581376850605,
+          "Surprise": 0.007027859333902597,
+          "Trust": 0.09203305840492249
+        },
+        "start_token": 0
+      },
+      {
+        "aggregation_weight": 94,
+        "effective_tokens": 126,
+        "end_token": 220,
+        "index": 1,
+        "input_tokens": 128,
+        "new_tokens": 94,
+        "overlap_tokens": 32,
+        "probabilities": {
+          "Anger": 0.0021886611357331276,
+          "Anticipation": 0.2473560869693756,
+          "Disgust": 0.00042263715295121074,
+          "Fear": 0.2584686279296875,
+          "Joy": 0.23056122660636902,
+          "Sadness": 0.015251779928803444,
+          "Surprise": 0.0053018489852547646,
+          "Trust": 0.24044916033744812
+        },
+        "start_token": 94
+      },
+      {
+        "aggregation_weight": 56,
+        "effective_tokens": 72,
+        "end_token": 260,
+        "index": 2,
+        "input_tokens": 128,
+        "new_tokens": 40,
+        "overlap_tokens": 32,
+        "probabilities": {
+          "Anger": 0.0027408688329160213,
+          "Anticipation": 0.33855316042900085,
+          "Disgust": 0.0004328222421463579,
+          "Fear": 0.2741686999797821,
+          "Joy": 0.20614655315876007,
+          "Sadness": 0.03450104966759682,
+          "Surprise": 0.005461524706333876,
+          "Trust": 0.1379953771829605
+        },
+        "start_token": 188
+      }
+    ],
+    "labels": [
+      "anger",
+      "anticipation",
+      "disgust",
+      "fear",
+      "joy",
+      "sadness",
+      "surprise",
+      "trust"
+    ],
+    "probabilities": {
+      "Anger": 0.002142262224402246,
+      "Anticipation": 0.23055121968221498,
+      "Disgust": 0.0004221602310987331,
+      "Fear": 0.19517862575368214,
+      "Joy": 0.3928066995970639,
+      "Sadness": 0.017241790993908705,
+      "Surprise": 0.006066475893094108,
+      "Trust": 0.15559076562453522
+    },
+    "token_count": 260,
+    "top_3": [
+      {
+        "emotion": "Joy",
+        "probability": 0.3928066995970639,
+        "score": 39
+      },
+      {
+        "emotion": "Anticipation",
+        "probability": 0.23055121968221498,
+        "score": 23
+      },
+      {
+        "emotion": "Fear",
+        "probability": 0.19517862575368214,
+        "score": 19
+      }
+    ],
+    "truncated": false
+  },
+  "scores": {
+    "Anger": 0.002142262224402246,
+    "Anticipation": 0.23055121968221498,
+    "Disgust": 0.0004221602310987331,
+    "Fear": 0.19517862575368214,
+    "Joy": 0.3928066995970639,
+    "Sadness": 0.017241790993908705,
+    "Surprise": 0.006066475893094108,
+    "Trust": 0.15559076562453522
+  },
+  "generation": {
+    "duration_ms": 14628.522750020027,
+    "execution": "on-device",
+    "model": "qwen3.5-4b-q4_k_m",
+    "runtime": "llama.rn@0.13.0-rc.9",
+    "sha256": "a9d0a3e1d8c91732a3812becd31f8d4a8ff57414903f226306069f0437e2ac50",
+    "stopped_eos": true,
+    "tokens_per_second": 14.887343913420539,
+    "tokens_predicted": 134
+  },
+  "causes_count": 3,
+  "confirmed": {
+    "native_scores_match_reference_within": 0.006,
+    "diary_bound_sync": true,
+    "displayed_eight_emotion_chart": true
+  },
+  "scope": "Synthetic finalized diary was seeded through API. This run tested real phone classification, Qwen assessment/support/causes, sync, and chart; it did not regenerate the draft."
+}

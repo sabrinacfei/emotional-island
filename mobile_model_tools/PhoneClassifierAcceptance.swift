@@ -25,7 +25,7 @@ final class PhoneClassifierAcceptance: XCTestCase {
       }
     }
   }
-  func tap(_ id:String){let e=wait(id);for _ in 0..<5 {dismissSystemSheets();if e.isHittable{break};app.swipeUp()};e.tap()}
+  func tap(_ id:String){let e=wait(id);for _ in 0..<5 {dismissSystemSheets();if e.isHittable{break};app.swipeUp()};e.press(forDuration:0.15)}
   func get(_ path:String)throws->Any {
     var req=URLRequest(url:URL(string:config["api"]!+path)!);req.setValue("Bearer "+config["token"]!,forHTTPHeaderField:"Authorization");req.timeoutInterval=110
     let done=DispatchSemaphore(value:0);var outcome:Result<Any,Error>!
@@ -35,6 +35,24 @@ final class PhoneClassifierAcceptance: XCTestCase {
       outcome=Result{try JSONSerialization.jsonObject(with:data)}
     }.resume()
     XCTAssertEqual(done.wait(timeout:.now()+115),.success);return try outcome.get()
+  }
+  func testNativeEncoderOnPhone() throws {
+    let bundle=Bundle(for:type(of:self))
+    let assets=bundle.resourceURL!.appendingPathComponent("Assets")
+    let fixtures=try JSONSerialization.jsonObject(with:Data(contentsOf:bundle.url(forResource:"tokenizer-fixtures",withExtension:"json")!)) as! [[String:Any]]
+    let tokenizer=try ModernBERTTokenizer(data:Data(contentsOf:assets.appendingPathComponent("modernbert-tokenizer.json")))
+    for fixture in fixtures {XCTAssertEqual(try tokenizer.encode(fixture["text"] as! String),fixture["ids"] as! [Int])}
+    let classifier=try PhoneModernBERT(assets:assets)
+    let texts=["今天林小晴陪我完成報告很開心，但也擔心成績。",String(repeating:"I am happy about finishing the presentation, but worried about tomorrow. ",count:20)]
+    let results=try texts.map {try classifier.classify($0)}
+    let expected=try JSONSerialization.jsonObject(with:Data(contentsOf:bundle.url(forResource:"phone-reference",withExtension:"json")!)) as! [String:Any]
+    let reference=expected["probabilities"] as! [String:Double]
+    let actual=(results[1]["analysis"] as! [String:Any])["probabilities"] as! [String:Double]
+    for key in reference.keys {XCTAssertEqual(actual[key]!,reference[key]!,accuracy:0.006)}
+    let proof:[String:Any]=["synthetic":true,"execution_host":"physical iPhone XCTest runner; production Swift classifier","tokenizer_cases_passed":fixtures.count,"classifications":results]
+    let data=try JSONSerialization.data(withJSONObject:proof,options:[.prettyPrinted,.sortedKeys])
+    let attachment=XCTAttachment(data:data,uniformTypeIdentifier:"public.json");attachment.name="phone-native-encoder-proof";attachment.lifetime = .keepAlways;add(attachment)
+    classifier.release()
   }
   func testPhoneClassificationAndGeneration() throws {
     app.terminate();app.launch()
@@ -48,10 +66,34 @@ final class PhoneClassifierAcceptance: XCTestCase {
     // This is the visible center tab on the verified iPhone layout.
     let tab=app.buttons.matching(NSPredicate(format:"label CONTAINS %@","趨勢")).firstMatch
     print("ACCEPTANCE_LAYOUT app=\(app.frame) window=\(app.windows.firstMatch.frame) tab=\(tab.frame)")
-    app.windows.firstMatch.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.94)).tap()
-    tap("calendar-"+config["date"]!)
+    for _ in 0..<3 {
+      app.windows.firstMatch.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.94)).press(forDuration:0.15)
+      if element("calendar-"+config["date"]!).waitForExistence(timeout:3) {break}
+    }
+    _ = wait("calendar-"+config["date"]!,20)
+    try finishDailyWorkflow()
+  }
+  func testResumeKnownSyntheticDiary() throws {
+    app.activate()
+    let input=app.textViews.matching(identifier:"daily-content").firstMatch
+    let expected=String(repeating:"I am happy about finishing the presentation, but worried about tomorrow. ",count:20).trimmingCharacters(in:.whitespacesAndNewlines)
+    guard input.exists, (input.value as? String)?.trimmingCharacters(in:.whitespacesAndNewlines)==expected else {throw XCTSkip("Resume only the known pending synthetic fixture; no other diary is touched.")}
+    try finishDailyWorkflow(openDate:false)
+  }
+  private func finishDailyWorkflow(openDate:Bool=true) throws {
+    if openDate {tap("calendar-"+config["date"]!)}
     _ = wait("daily-confirm");tap("daily-confirm")
-    _ = wait("phone-classification-result",600)
+    let result=element("phone-classification-result")
+    var previous=""
+    for _ in 0..<120 {
+      if result.waitForExistence(timeout:5) {break}
+      let progress=element("daily-progress").label
+      if progress != previous {print("ACCEPTANCE_PHASE \(progress)");previous=progress}
+      if progress.contains("尚未完成") {
+        XCTFail("Synthetic workflow did not complete: \(progress)");return
+      }
+    }
+    XCTAssertTrue(result.exists,"Missing phone classification result")
     XCTAssertFalse(element("local-analysis-pending-sync").exists,"New backend should accept the native result")
     _ = wait("view-daily-analysis",120)
     let rows=try get("/history") as! [[String:Any]];XCTAssertEqual(rows.count,1)

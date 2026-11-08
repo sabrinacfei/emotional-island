@@ -1,0 +1,65 @@
+{
+  "synthetic": true,
+  "merged_and_padded_max_error": 7.450580596923828e-09,
+  "coreml_checks": [
+    {
+      "max_absolute_difference": 8.046627044677734e-06,
+      "seconds": 1.0616100420011207
+    },
+    {
+      "max_absolute_difference": 0.00013637542724609375,
+      "seconds": 0.025470417022006586
+    },
+    {
+      "max_absolute_difference": 0.0009233951568603516,
+      "seconds": 0.02206083299824968
+    },
+    {
+      "max_absolute_difference": 0.0020506978034973145,
+      "seconds": 0.021667666995199397
+    },
+    {
+      "max_absolute_difference": 0.0003243982791900635,
+      "seconds": 0.021630250004818663
+    },
+    {
+      "max_absolute_difference": 0.0005679130554199219,
+      "seconds": 0.01957166599459015
+    },
+    {
+      "max_absolute_difference": 0.0030713677406311035,
+      "seconds": 0.019721832999493927
+    },
+    {
+      "max_absolute_difference": 0.0009374022483825684,
+      "seconds": 0.019376957992790267
+    }
+  ],
+  "fp16_tolerance": 0.006,
+  "all_argmax_equal": true,
+  "manifest": {
+    "schema": "modernbert-phone-v1",
+    "model": "modernbert-lora-coreml-fp16-v1",
+    "runtime": "coreml",
+    "model_sha256": "4e1c697eb572327ea80d8e70a74172dcfe94807a31ecbb72eb37c5e91a0bfbae",
+    "tokenizer_sha256": "fe530b837c912faf33acd6b1a15a46234259519acb967ead693c692cc2e93647",
+    "labels": [
+      "anger",
+      "anticipation",
+      "disgust",
+      "fear",
+      "joy",
+      "sadness",
+      "surprise",
+      "trust"
+    ],
+    "max_input_tokens": 128,
+    "overlap_tokens": 32,
+    "pad_token_id": 50283,
+    "cls_token_id": 50281,
+    "sep_token_id": 50282,
+    "input_dtype": "int32",
+    "output": "probabilities",
+    "base_revision": "f738a818a4384aebf1ccdb41da4145457d5f40b0"
+  }
+}

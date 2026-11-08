@@ -1,0 +1,12 @@
+{
+  "health": {
+    "ok": true,
+    "service": "emotional-island-api",
+    "contract": "phone-slm-v1",
+    "phone_feedback_only": true
+  },
+  "phone_route_ready": true,
+  "unauthenticated_status": 401,
+  "checked_after_source_commit": "9d9182d",
+  "exact_running_git_revision_exposed": false
+}

@@ -1,0 +1,245 @@
+{
+  "classifications" : [
+    {
+      "analysis" : {
+        "aggregation" : {
+          "max_input_tokens" : 128,
+          "method" : "overlap_coverage_weighted_mean",
+          "observed_overlap_tokens" : 0,
+          "overlap_tokens" : 32,
+          "processed_content_tokens" : 29,
+          "special_and_padding_tokens_in_weight" : false,
+          "unique_content_tokens" : 29,
+          "weight_sum" : 29,
+          "weighting" : "inverse_token_coverage"
+        },
+        "chunk_count" : 1,
+        "chunks" : [
+          {
+            "aggregation_weight" : 29,
+            "effective_tokens" : 29,
+            "end_token" : 29,
+            "index" : 0,
+            "input_tokens" : 128,
+            "new_tokens" : 29,
+            "overlap_tokens" : 0,
+            "probabilities" : {
+              "Anger" : 0.05481402575969696,
+              "Anticipation" : 0.0062758554704487324,
+              "Disgust" : 0.16201458871364594,
+              "Fear" : 0.0016371548408642411,
+              "Joy" : 0.0079102162271738052,
+              "Sadness" : 0.062614865601062775,
+              "Surprise" : 0.5715937614440918,
+              "Trust" : 0.1331394761800766
+            },
+            "start_token" : 0
+          }
+        ],
+        "labels" : [
+          "anger",
+          "anticipation",
+          "disgust",
+          "fear",
+          "joy",
+          "sadness",
+          "surprise",
+          "trust"
+        ],
+        "probabilities" : {
+          "Anger" : 0.054814028816288315,
+          "Anticipation" : 0.0062758558204088983,
+          "Disgust" : 0.1620145977480561,
+          "Fear" : 0.0016371549321568121,
+          "Joy" : 0.0079102166682707368,
+          "Sadness" : 0.062614869092651904,
+          "Surprise" : 0.57159379331784177,
+          "Trust" : 0.13313948360432551
+        },
+        "scores" : {
+          "Anger" : 6,
+          "Anticipation" : 1,
+          "Disgust" : 16,
+          "Fear" : 0,
+          "Joy" : 1,
+          "Sadness" : 6,
+          "Surprise" : 57,
+          "Trust" : 13
+        },
+        "token_count" : 29,
+        "top_3" : [
+          {
+            "emotion" : "Surprise",
+            "probability" : 0.57159379331784177,
+            "score" : 57
+          },
+          {
+            "emotion" : "Disgust",
+            "probability" : 0.1620145977480561,
+            "score" : 16
+          },
+          {
+            "emotion" : "Trust",
+            "probability" : 0.13313948360432551,
+            "score" : 13
+          }
+        ],
+        "top_emotion" : "Surprise",
+        "top_probability" : 0.57159379331784177,
+        "truncated" : false
+      },
+      "trace" : {
+        "duration_ms" : 2990.1703333598562,
+        "execution" : "on-device",
+        "input_sha256" : "313444ef406c192e84cda51078a95843323cf691111efc1fddd189b15e98d255",
+        "load_ms" : 1106.0507916263305,
+        "model" : "modernbert-lora-coreml-fp16-v1",
+        "model_sha256" : "4e1c697eb572327ea80d8e70a74172dcfe94807a31ecbb72eb37c5e91a0bfbae",
+        "runtime" : "coreml",
+        "tokenizer_sha256" : "fe530b837c912faf33acd6b1a15a46234259519acb967ead693c692cc2e93647"
+      }
+    },
+    {
+      "analysis" : {
+        "aggregation" : {
+          "max_input_tokens" : 128,
+          "method" : "overlap_coverage_weighted_mean",
+          "observed_overlap_tokens" : 32,
+          "overlap_tokens" : 32,
+          "processed_content_tokens" : 324,
+          "special_and_padding_tokens_in_weight" : false,
+          "unique_content_tokens" : 260,
+          "weight_sum" : 260,
+          "weighting" : "inverse_token_coverage"
+        },
+        "chunk_count" : 3,
+        "chunks" : [
+          {
+            "aggregation_weight" : 110,
+            "effective_tokens" : 126,
+            "end_token" : 126,
+            "index" : 0,
+            "input_tokens" : 128,
+            "new_tokens" : 126,
+            "overlap_tokens" : 0,
+            "probabilities" : {
+              "Anger" : 0.0017978670075535774,
+              "Anticipation" : 0.1612078845500946,
+              "Disgust" : 0.00041632473585195839,
+              "Fear" : 0.10088130831718445,
+              "Joy" : 0.62647980451583862,
+              "Sadness" : 0.01015581376850605,
+              "Surprise" : 0.0070278593339025974,
+              "Trust" : 0.092033058404922485
+            },
+            "start_token" : 0
+          },
+          {
+            "aggregation_weight" : 94,
+            "effective_tokens" : 126,
+            "end_token" : 220,
+            "index" : 1,
+            "input_tokens" : 128,
+            "new_tokens" : 94,
+            "overlap_tokens" : 32,
+            "probabilities" : {
+              "Anger" : 0.0021886611357331276,
+              "Anticipation" : 0.24735608696937561,
+              "Disgust" : 0.00042263715295121074,
+              "Fear" : 0.2584686279296875,
+              "Joy" : 0.23056122660636902,
+              "Sadness" : 0.015251779928803444,
+              "Surprise" : 0.0053018489852547646,
+              "Trust" : 0.24044916033744812
+            },
+            "start_token" : 94
+          },
+          {
+            "aggregation_weight" : 56,
+            "effective_tokens" : 72,
+            "end_token" : 260,
+            "index" : 2,
+            "input_tokens" : 128,
+            "new_tokens" : 40,
+            "overlap_tokens" : 32,
+            "probabilities" : {
+              "Anger" : 0.0027408688329160213,
+              "Anticipation" : 0.33855316042900085,
+              "Disgust" : 0.00043282224214635789,
+              "Fear" : 0.2741686999797821,
+              "Joy" : 0.20614655315876007,
+              "Sadness" : 0.034501049667596817,
+              "Surprise" : 0.0054615247063338757,
+              "Trust" : 0.13799537718296051
+            },
+            "start_token" : 188
+          }
+        ],
+        "labels" : [
+          "anger",
+          "anticipation",
+          "disgust",
+          "fear",
+          "joy",
+          "sadness",
+          "surprise",
+          "trust"
+        ],
+        "probabilities" : {
+          "Anger" : 0.0021422622244022457,
+          "Anticipation" : 0.23055121968221498,
+          "Disgust" : 0.00042216023109873307,
+          "Fear" : 0.19517862575368214,
+          "Joy" : 0.39280669959706382,
+          "Sadness" : 0.017241790993908702,
+          "Surprise" : 0.0060664758930941073,
+          "Trust" : 0.15559076562453522
+        },
+        "scores" : {
+          "Anger" : 0,
+          "Anticipation" : 23,
+          "Disgust" : 0,
+          "Fear" : 19,
+          "Joy" : 39,
+          "Sadness" : 2,
+          "Surprise" : 1,
+          "Trust" : 16
+        },
+        "token_count" : 260,
+        "top_3" : [
+          {
+            "emotion" : "Joy",
+            "probability" : 0.39280669959706382,
+            "score" : 39
+          },
+          {
+            "emotion" : "Anticipation",
+            "probability" : 0.23055121968221498,
+            "score" : 23
+          },
+          {
+            "emotion" : "Fear",
+            "probability" : 0.19517862575368214,
+            "score" : 19
+          }
+        ],
+        "top_emotion" : "Joy",
+        "top_probability" : 0.39280669959706382,
+        "truncated" : false
+      },
+      "trace" : {
+        "duration_ms" : 176.06258334126323,
+        "execution" : "on-device",
+        "input_sha256" : "f50724ca958606ddbb308e6c78f87884c18093a60f1029797db85e88cab11369",
+        "load_ms" : 63.437499979045242,
+        "model" : "modernbert-lora-coreml-fp16-v1",
+        "model_sha256" : "4e1c697eb572327ea80d8e70a74172dcfe94807a31ecbb72eb37c5e91a0bfbae",
+        "runtime" : "coreml",
+        "tokenizer_sha256" : "fe530b837c912faf33acd6b1a15a46234259519acb967ead693c692cc2e93647"
+      }
+    }
+  ],
+  "execution_host" : "physical iPhone XCTest runner; production Swift classifier",
+  "synthetic" : true,
+  "tokenizer_cases_passed" : 214
+}

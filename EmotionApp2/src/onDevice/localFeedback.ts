@@ -21,6 +21,7 @@ export type LocalFeedback = Support & Decision & {
   classifier_analysis: ClassifierAnalysis | null;
   classifier_trace?: ClassifierTrace;
   causes?: EmotionCause[];
+  failure_stage?: 'classification' | 'assessment' | 'assessment_validation' | 'support' | 'support_validation' | 'causes' | 'causes_validation';
 };
 export interface PhoneSLM {
   assess(input: { diary: string; emotion_scores?: Scores; emotion_probabilities?: Scores; safety: Decision }): Promise<SLMRun>;
@@ -79,6 +80,7 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
   let analysis: ClassifierAnalysis | null = null;
   let classifierTrace: ClassifierTrace | undefined;
   let generation: GenerationTrace | null = null;
+  let stage: NonNullable<LocalFeedback['failure_stage']> = 'classification';
   let safety: Decision = decision('none');
   const base = () => ({ ...safety, scores, receipt_token: receipt, classification_available: scores !== null, classifier_analysis: analysis, generation,
     ...(classifierTrace ? { classifier_trace: classifierTrace } : {}) });
@@ -107,24 +109,34 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
     }
     const emotionInput = scores && analysis ? { emotion_scores: scores, emotion_probabilities: analysis.probabilities } : {};
     progress('正在手機理解日記與判斷回應模式');
+    stage = 'assessment';
     const assessed = await slm.assess({ diary, ...emotionInput, safety });
+    stage = 'assessment_validation';
     const assessment = parseAssessment(assessed.output, diary);
     safety = decision(safety.risk_level, assessment.risk_level);
     if (safety.risk_level === 'high') return { ...base(), ...fixedSafety(safety), inference_source: 'fixed-safety', status: 'local_safety', safety_check_status: 'screened', context: assessment.context };
     progress('正在手機產生回饋');
+    stage = 'support';
     const responded = await slm.respond({ diary, ...emotionInput, assessment, safety });
-    const support = parseSupport(responded.output, assessment);
+    stage = 'support_validation';
     generation = responded.trace;
+    const support = parseSupport(responded.output, assessment);
     if (generation.execution !== 'on-device' || generation.tokens_predicted <= 0 || !generation.raw_text) throw new Error('Missing native generation result');
-    const causes = !immediate && slm.causes && analysis
-      ? parseCauses((await slm.causes({ diary, emotion_probabilities: analysis.probabilities })).output, diary) : [];
+    let causes: EmotionCause[] = [];
+    if (!immediate && slm.causes && analysis) {
+      stage = 'causes';
+      progress('正在手機整理情緒成因');
+      const found = await slm.causes({ diary, emotion_probabilities: analysis.probabilities });
+      stage = 'causes_validation';
+      causes = parseCauses(found.output, diary);
+    }
     return { ...base(), ...support, causes, inference_source: 'phone-qwen3.5-4b', status: 'completed', safety_check_status: 'screened', context: assessment.context };
   } catch (error) {
     if (__DEV__) {
       console.error('[AI Analysis Failed]', { stage: 'local-feedback', errorType: error instanceof Error ? error.name : 'UnknownError' });
     }
     // Failed checks never become SUPPORT_MODE. Keep valid scores without claiming the route was screened.
-    return { ...base(), ...fixedSafety(safety), inference_source: 'unavailable', response_mode: 'SAFE_MODE', status: 'unavailable', safety_check_status: 'unavailable', context: null };
+    return { ...base(), ...fixedSafety(safety), inference_source: 'unavailable', response_mode: 'SAFE_MODE', status: 'unavailable', safety_check_status: 'unavailable', context: null, failure_stage: stage };
   }
 }
 

@@ -5,6 +5,7 @@ import {
   KeyboardAvoidingView, Platform, Animated, ImageBackground,
   FlatList,
   DimensionValue } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createStackNavigator } from '@react-navigation/stack';
@@ -2131,7 +2132,10 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
         ? entry.result : await runLocalFeedback(entry.content, classifyOnPhone, phoneSLM, setProgress);
       const saved: PhoneDiary = { ...entry, result: feedback, syncStatus: 'pending' };
       await savePhoneDiary(saved);
-      if (feedback.status === 'unavailable') { setProgress('日記已定稿，分析尚未完成，可稍後重試。'); return; }
+      if (feedback.status === 'unavailable') {
+        const phases = { classification: '情緒分類', assessment: '語境理解', assessment_validation: '語境檢查', support: '陪伴回饋', support_validation: '回饋檢查', causes: '情緒成因', causes_validation: '成因檢查' };
+        setProgress(`日記已定稿，${feedback.failure_stage ? phases[feedback.failure_stage] : '分析'}尚未完成，可稍後重試。`); return;
+      }
       let committed;
       try { committed = await syncPhoneFeedback(BASE_URL, token, saved, feedback); }
       catch {
@@ -3023,7 +3027,7 @@ async function registerForPushNotifications(authToken: string): Promise<PushRegi
 // App Entry
 // ─────────────────────────────────────────────────────────
 export default function App() {
-  return <InteractionFeedbackProvider><NoticeProvider><AppContent /></NoticeProvider></InteractionFeedbackProvider>;
+  return <GestureHandlerRootView style={{ flex: 1 }}><InteractionFeedbackProvider><NoticeProvider><AppContent /></NoticeProvider></InteractionFeedbackProvider></GestureHandlerRootView>;
 }
 
 function AppContent() {
