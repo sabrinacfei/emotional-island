@@ -32,3 +32,10 @@ EmotionApp2/yarn-error.log*
 *.log
 coverage/
 .pytest_cache/
+
+*.mlmodelc/
+*.mlpackage/
+.mobile_modernbert_work_*/
+*.xcresult/
+phone-credentials.json
+*.backup

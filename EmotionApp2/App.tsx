@@ -1,11 +1,10 @@
 import React, { useState, useRef, useEffect, createContext, useContext } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions,
-  PanResponder, ActivityIndicator, TextInput, Image, Alert,
-  KeyboardAvoidingView, Platform, Animated, Modal, ImageBackground,
+  View, Text, StyleSheet, ScrollView, Dimensions,
+  PanResponder, ActivityIndicator, TextInput, Image, AppState, Linking, Switch,
+  KeyboardAvoidingView, Platform, Animated, ImageBackground,
   FlatList,
-  DimensionValue
-} from 'react-native';
+  DimensionValue } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createStackNavigator } from '@react-navigation/stack';
@@ -15,6 +14,20 @@ import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { CLOUD_API_URL, syncPhoneFeedback, saveFragmentOriginal, getMobile, post } from './src/onDevice/cloudClient';
+import { classifyOnPhone } from './src/onDevice/modernbert/runtime';
+import { runLocalFeedback, runImmediateSupport, type LocalFeedback } from './src/onDevice/localFeedback';
+import { trendPaths, type WeekReview } from './src/onDevice/weekly';
+import { percentageScores } from './src/onDevice/emotionScores';
+import { FeedbackTouchable as TouchableOpacity, InteractionFeedbackProvider, selectionFeedback, useInteractionFeedback } from './src/ui/InteractionFeedback';
+import { Alert, DismissibleModal, NoticeProvider } from './src/ui/Overlay';
+import { ensureNotificationPermission, notificationStatus, sendLocalTestNotification } from './src/notifications';
+import { fetchWithTimeout } from './src/network';
+import { phoneSLM, composePhoneDaily } from './src/onDevice/qwen/runtime';
+import { SafetyResources } from './src/onDevice/PhoneModelSetup';
+import { PhoneModelPreparationScreen } from './src/onDevice/PhoneModelPreparationScreen';
+import { newPhoneDiary, pendingPhoneDiaries, savePhoneDiary, latestRecoverableFragment, type PhoneDiary } from './src/onDevice/diaryStore';
+
 import {
   useFonts,
   NotoSerifTC_400Regular,
@@ -25,10 +38,26 @@ import {
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
 const { width: SW, height: SH } = Dimensions.get('window');
-declare const process: { env?: Record<string, string | undefined> };
+declare const process: { env: Record<string, string | undefined> };
 
 const EXPO_EXTRA = (Constants.expoConfig?.extra || {}) as { apiUrl?: string };
-const BASE_URL = process.env?.EXPO_PUBLIC_API_URL || EXPO_EXTRA.apiUrl || 'http://192.168.0.124:8000';
+// Use direct property access so Expo can inline the build-time environment value.
+const LOCAL_API_URL = CLOUD_API_URL;
+const BASE_URL = (process.env.EXPO_PUBLIC_API_URL || EXPO_EXTRA.apiUrl || LOCAL_API_URL).replace(/\/+$/, '');
+const API_RETRY_DELAY_MS = 1200;
+
+const fetchWithWakeRetry = async (url: string, init?: RequestInit) => {
+  try {
+    return await fetch(url, init);
+  } catch {
+    await new Promise(resolve => setTimeout(resolve, API_RETRY_DELAY_MS));
+    return fetch(url, init);
+  }
+};
+
+const logBackgroundRequestFailure = (scope: string, error: unknown) => {
+  if (__DEV__) console.log(`[${scope}] background request unavailable at ${BASE_URL}`, error);
+};
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -94,6 +123,7 @@ const NEG_EMO = ['Sadness', 'Anger', 'Fear', 'Disgust'];
 const EMO_KEYS = Object.keys(EC);
 
 const MOOD_TREE: Record<string, { img: any; label: string; color: string }> = {
+  Unclassified: { img: require('./assets/leaf.png'), label: '未分類', color: '#8A7A6A' },
   Joy:          { img: require('./assets/joy.png'),         label: '喜悅', color: '#F3D89D' },
   Sadness:      { img: require('./assets/sad.png'),         label: '悲傷', color: '#7E9AB9' },
   Fear:         { img: require('./assets/fear.png'),        label: '恐懼', color: '#AD8A62' },
@@ -104,6 +134,7 @@ const MOOD_TREE: Record<string, { img: any; label: string; color: string }> = {
   Trust:        { img: require('./assets/Trust.png'),       label: '信任', color: '#7FBB71' },
 };
 const HOME_MOOD_TREE: Record<string, any> = {
+  Unclassified: require('./assets/leaf.png'),
   Trust:        require('./assets/Trust1.png'),
   Disgust:      require('./assets/Disgust1.png'),
   Surprise:     require('./assets/Surprise1.png'),
@@ -121,7 +152,7 @@ const ACHIEVEMENT_ASSETS: Record<string, any> = {
   birthday: require('./assets/HBD.png'),
 };
 const ACHIEVEMENT_META: Record<string, { label: string; img: any; unit: string }> = {
-  first_planting: { label: '初次種植', img: require('./assets/First＿planting.png'), unit: '次' },
+  first_planting: { label: '初次種植', img: require('./assets/first_planting.png'), unit: '次' },
   watering: { label: '持續澆灌', img: require('./assets/water.png'), unit: '天' },
   growing: { label: '茁壯成長', img: require('./assets/growing.png'), unit: '次' },
   self_care: { label: '自我關懷', img: require('./assets/Self-care.png'), unit: '次' },
@@ -175,12 +206,7 @@ const AuthContext = createContext({
 
 // ─── 工具函式 ───
 
-function norm(scores: Record<string, number> = {}): Record<string, number> {
-  const dec = Object.values(scores).some(v => v > 0 && v <= 1);
-  return dec
-    ? Object.fromEntries(Object.entries(scores).map(([k, v]) => [k, Math.round(v * 100)]))
-    : scores;
-}
+const norm = percentageScores;
 
 // 對齊 
 function calcScore(e: Record<string, number> = {}) {
@@ -194,7 +220,7 @@ function toTreeRecord(d: any): TreeRecord {
   return {
     id: String(d.id || d._id || d.analyzed_at || Math.random()),
     date: d.date_label || d.analyzed_at?.slice(0, 10) || d.date || '',
-    mood: d.dominant_emotions?.[0] || d.dominantEmotion || 'Joy',
+    mood: d.classification_available === false ? 'Unclassified' : (d.dominant_emotions?.[0] || d.dominantEmotion || 'Joy'),
     summary: d.daily_summary || d.summary || d.one_line_summary || d.analysis_notes || '',
     scores: d.scores || d.average_scores || {},
     raw: d,
@@ -214,7 +240,7 @@ function getEmoSource(raw: any, key: string, scoreVal: number): string {
   const savedReason = raw?.emotion_reasons?.[key] || raw?.emotionReasons?.[key];
   if (savedReason) return savedReason;
   if (!raw || scoreVal === 0) {
-    return `MongoDB 尚未儲存${EC[key]?.l || key}的具體原因。`;
+    return `這筆紀錄尚未產生${EC[key]?.l || key}的具體原因。`;
   }
   const cats = EMO_SRC[key] || ['st'];
   const lines: string[] = [];
@@ -230,7 +256,7 @@ function getEmoSource(raw: any, key: string, scoreVal: number): string {
     ].filter((t: any) => (t.t || t.tag) !== 'none' && (t.r || t.reason || t.text || t.label)).map((t: any) => t.r || t.reason || t.text || t.label);
     return all.length
       ? all.join('；也因為') + '，共同影響了今天的情緒。'
-      : `MongoDB 尚未儲存${EC[key]?.l || key}的具體原因。`;
+      : `這筆紀錄尚未產生${EC[key]?.l || key}的具體原因。`;
   }
   return lines.join('；也因為') + '。';
 }
@@ -383,13 +409,10 @@ function recordMatchesMonth(record: TreeRecord, year: number, month: number) {
   return record.date?.startsWith(`${year}-${String(month).padStart(2, '0')}-`);
 }
 
-function isWeekComplete(records: TreeRecord[], year: number, month: number, week: number) {
+function hasWeekAnalysis(records: TreeRecord[], year: number, month: number, week: number) {
   const { startDay, endDay } = getMonthWeekRange(year, month, week);
-  const days = new Set(records.filter(r => recordMatchesMonth(r, year, month)).map(r => Number(r.date?.slice(8, 10))).filter(Boolean));
-  for (let day = startDay; day <= endDay; day++) {
-    if (!days.has(day)) return false;
-  }
-  return true;
+  return records.some(r => recordMatchesMonth(r, year, month) && r.raw?.classification_available === true
+    && Number(r.date.slice(8, 10)) >= startDay && Number(r.date.slice(8, 10)) <= endDay);
 }
 
 // ─── UI 元件 ───
@@ -404,7 +427,7 @@ function ScreenBg({ source, children }: any) {
 
 function BackButton({ onPress }: { onPress: () => void }) {
   return (
-    <TouchableOpacity onPress={onPress} style={s.backBtn}>
+    <TouchableOpacity testID="back" accessibilityLabel="返回" onPress={onPress} style={s.backBtn}>
       <Image source={require('./assets/return.png')} style={{ width: 26, height: 26 }} resizeMode="contain" />
     </TouchableOpacity>
   );
@@ -511,31 +534,30 @@ function EmotionDonut({ records, size = 116 }: { records: TreeRecord[]; size?: n
 }
 
 function AchievementPopup({ popup, onClose }: { popup: any; onClose: () => void }) {
-  const pulse = useRef(new Animated.Value(0.78)).current;
+  const pulse = useRef(new Animated.Value(1)).current;
+  const { animations, reduceMotion } = useInteractionFeedback();
   useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 0.78, duration: 900, useNativeDriver: true }),
-      ])
-    ).start();
-  }, []);
+    if (!animations || reduceMotion) { pulse.setValue(1); return; }
+    const animation = Animated.loop(Animated.sequence([
+      Animated.timing(pulse, { toValue: 0.86, duration: 900, useNativeDriver: true }),
+      Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+    ]));
+    animation.start();
+    return () => animation.stop();
+  }, [animations, reduceMotion, pulse]);
   const asset = ACHIEVEMENT_ASSETS[popup?.key] || FEATURE_ASSETS.leaf;
-  return (
-    <TouchableOpacity style={s.achievementOverlay} activeOpacity={1} onPress={onClose}>
-      <Animated.Image source={asset} style={[s.achievementPopupImage, { opacity: pulse, transform: [{ scale: pulse.interpolate({ inputRange: [0.78, 1], outputRange: [0.96, 1.04] }) }] }]} resizeMode="contain" />
+  return <DismissibleModal visible onClose={onClose} overlayStyle={s.achievementOverlay}>
+    <View style={{ alignItems: 'center' }}>
+      <Animated.Image source={asset} style={[s.achievementPopupImage, { opacity: pulse, transform: [{ scale: pulse }] }]} resizeMode="contain" />
       <Text style={s.achievementPopupTitle}>{popup?.title || '新的成就'}</Text>
-      <Text style={s.achievementPopupHint}>按任意一個地方確認</Text>
-    </TouchableOpacity>
-  );
+      <Text style={s.achievementPopupHint}>輕點任意位置關閉</Text>
+    </View>
+  </DismissibleModal>;
 }
 
-// ─────────────────────────────────────────────────────────
-// 柱狀圖元件（對齊 HTML drawBar）
-// ─────────────────────────────────────────────────────────
 interface BarChartProps {
-  scores: Record<string, number>;          // normalized 0~100
-  raw?: any;                               // for getEmoSource
+  scores: Record<string, number>;
+  raw?: any;
 }
 
 function EmotionBarChart({ scores, raw }: BarChartProps) {
@@ -562,7 +584,7 @@ function EmotionBarChart({ scores, raw }: BarChartProps) {
     <View>
       {/* SVG 圖表 */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingRight: 8 }}>
-      <Svg width={chartW} height={chartH}>
+      <Svg testID="daily-emotion-chart" accessible accessibilityLabel={EMO_KEYS.map(key => `${EC[key].l} ${scores[key] || 0}%`).join('，')} width={chartW} height={chartH}>
         {/* 格線 + Y 軸標籤 */}
         {gridValues.map(v => {
           const y = PT + gH - (v / 100) * gH;
@@ -637,20 +659,13 @@ function EmotionBarChart({ scores, raw }: BarChartProps) {
 
       <Text style={s.chartHint}>點擊柱狀圖查看情緒來源</Text>
 
-      {/* Popup（對齊 HTML ePopup）*/}
-      {popup && (
-        <View style={[s.emoPopup, { borderLeftColor: EC[popup.key].c, backgroundColor: EC[popup.key].c + '18' }]}>
-          <View style={s.emoPopupHdr}>
-            <Text style={[s.emoPopupTitle, { color: EC[popup.key].c }]}>
-              {EC[popup.key].l}　{scores[popup.key] || 0}%
-            </Text>
-            <TouchableOpacity onPress={() => setPopup(null)}>
-              <Text style={s.emoPopupClose}>✕</Text>
-            </TouchableOpacity>
-          </View>
+      <DismissibleModal visible={!!popup} onClose={() => setPopup(null)} overlayStyle={s.noticeOverlay}>
+        {popup && <View style={[s.elfSmallCard, { borderLeftWidth: 4, borderLeftColor: EC[popup.key].c }]}>
+          <Text style={[s.emoPopupTitle, { color: EC[popup.key].c }]}>{EC[popup.key].l}　{scores[popup.key] || 0}%</Text>
           <Text style={s.emoPopupBody}>{popup.text}</Text>
-        </View>
-      )}
+          <Text style={[s.mini, { marginTop: 12 }]}>輕點任意位置關閉</Text>
+        </View>}
+      </DismissibleModal>
     </View>
   );
 }
@@ -853,7 +868,7 @@ function WelcomeScreen({ onStart, onLogin }: any) {
         <TouchableOpacity style={s.welcomeStartBtn} onPress={onStart}>
           <Text style={s.welcomeStartText}>開始旅程</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={onLogin} style={s.welcomeLoginLink}>
+        <TouchableOpacity testID="welcome-login" onPress={onLogin} style={s.welcomeLoginLink}>
           <Text style={s.welcomeLoginText}>已有帳號？ <Text style={s.welcomeLoginStrong}>登入</Text></Text>
         </TouchableOpacity>
       </View>
@@ -1043,13 +1058,13 @@ function LoginScreen({ mode, setMode, onLoggedIn }: any) {
           </View>
           <View style={s.loginForm}>
             <View style={s.loginFieldWrap}>
-              <TextInput style={s.loginInput} placeholder="帳號" placeholderTextColor={C.muted} value={email} onChangeText={v => { setEmail(v); setLoginErrors(e => ({ ...e, email: '' })); }} autoCapitalize="none" keyboardType="email-address" />
+              <TextInput testID="login-email" style={s.loginInput} placeholder="帳號" placeholderTextColor={C.muted} value={email} onChangeText={v => { setEmail(v); setLoginErrors(e => ({ ...e, email: '' })); }} autoCapitalize="none" keyboardType="email-address" />
               {!!loginErrors.email && <Text style={s.fieldError}>*{loginErrors.email}</Text>}
             </View>
             <PasswordField value={password} placeholder="密碼" onChangeText={(v: string) => { setPassword(v); setLoginErrors(e => ({ ...e, password: '' })); }} error={loginErrors.password} />
             <TouchableOpacity style={s.forgotBtn} onPress={() => setMode('forgot')}><Text style={s.forgotText}>忘記密碼？</Text></TouchableOpacity>
           </View>
-          <TouchableOpacity style={s.loginBtn} onPress={handleLogin} disabled={authLoading}>
+          <TouchableOpacity testID="login-submit" style={s.loginBtn} onPress={handleLogin} disabled={authLoading}>
             {authLoading ? <ActivityIndicator color="white" /> : <Text style={s.loginBtnText}>登入</Text>}
           </TouchableOpacity>
           <View style={s.dividerRow}>
@@ -1313,11 +1328,11 @@ function HomeScreen({ navigation }: any) {
 
   const fetchTrees = async () => {
     try {
-      const res = await fetch(`${BASE_URL}/history`, { headers: { 'Authorization': `Bearer ${token}` } });
+      const res = await fetchWithWakeRetry(`${BASE_URL}/history`, { headers: { 'Authorization': `Bearer ${token}` } });
       const data = await res.json();
       const allTrees = (Array.isArray(data) ? data : []).map(toTreeRecord);
       setTrees(getRecentRecords(allTrees, HOME_TREE_LIMIT));
-    } catch (e) { console.error(e); } finally { setLoading(false); }
+    } catch (e) { logBackgroundRequestFailure('home-history', e); } finally { setLoading(false); }
   };
 
 const safeJson = async (res: Response) => {
@@ -1326,7 +1341,7 @@ const safeJson = async (res: Response) => {
   try {
     return text ? JSON.parse(text) : null;
   } catch (err) {
-    console.log('Response is not JSON:', text);
+    console.log('Response is not JSON');
     return null;
   }
 };
@@ -1334,12 +1349,12 @@ const safeJson = async (res: Response) => {
   const fetchBirthdayPopup = async () => {
     if (!token) return;
     try {
-      const res = await fetch(`${BASE_URL}/achievements`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetchWithWakeRetry(`${BASE_URL}/achievements`, { headers: { Authorization: `Bearer ${token}` } });
       const data = await safeJson(res);
       if (res.ok) {
         setBirthdayPopup((Array.isArray(data?.popups) ? data.popups : []).find((popup: any) => popup.key === 'birthday') || null);
       }
-    } catch (e) { console.error(e); }
+    } catch (e) { logBackgroundRequestFailure('birthday-popup', e); }
   };
 
   const fetchNotifications = async () => {
@@ -1348,7 +1363,7 @@ const safeJson = async (res: Response) => {
     try {
       const h = { Authorization: `Bearer ${token}` };
 
-      const statusRes = await fetch(`${BASE_URL}/daily-diary/today/status`, { headers: h });
+      const statusRes = await fetchWithWakeRetry(`${BASE_URL}/daily-diary/today/status`, { headers: h });
       const statusData = await safeJson(statusRes);
 
       if (statusRes.ok && statusData) {
@@ -1357,7 +1372,7 @@ const safeJson = async (res: Response) => {
         console.log('today status failed:', statusRes.status, statusData);
       }
 
-      const res = await fetch(`${BASE_URL}/notifications`, { headers: h });
+      const res = await fetchWithWakeRetry(`${BASE_URL}/notifications`, { headers: h });
       const data = await safeJson(res);
 
       if (res.ok && data) {
@@ -1370,7 +1385,7 @@ const safeJson = async (res: Response) => {
         setUnreadCount(0);
       }
     } catch (e) {
-      console.error(e);
+      logBackgroundRequestFailure('home-notifications', e);
       setNotifications([]);
       setUnreadCount(0);
     }
@@ -1382,13 +1397,13 @@ const safeJson = async (res: Response) => {
     try {
       await fetch(`${BASE_URL}/notifications/read`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({}) });
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
-    } catch (e) { console.error(e); }
+    } catch (e) { logBackgroundRequestFailure('notifications-read', e); }
   };
 
   const clearNotifications = async () => {
     try {
       await fetch(`${BASE_URL}/notifications/clear`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-    } catch (e) { console.error(e); }
+    } catch (e) { logBackgroundRequestFailure('notifications-clear', e); }
     setUnreadCount(0);
     setNotifications([]);
   };
@@ -1398,7 +1413,7 @@ const safeJson = async (res: Response) => {
     if (!item.read) setUnreadCount(prev => Math.max(0, prev - 1));
     try {
       await fetch(`${BASE_URL}/notifications/${item.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-    } catch (e) { console.error(e); }
+    } catch (e) { logBackgroundRequestFailure('notification-delete', e); }
   };
 
   const openNoticePanel = () => {
@@ -1429,15 +1444,16 @@ const safeJson = async (res: Response) => {
   };
 
   const dismissBirthdayPopup = async () => {
-    if (!birthdayPopup?.id) return setBirthdayPopup(null);
+    const popupId = birthdayPopup?.id;
+    setBirthdayPopup(null);
+    if (!popupId) return;
     try {
       await fetch(`${BASE_URL}/achievements/read`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ ids: [birthdayPopup.id] }),
+        body: JSON.stringify({ ids: [popupId] }),
       });
-    } catch (e) { console.error(e); }
-    setBirthdayPopup(null);
+    } catch (e) { logBackgroundRequestFailure('achievement-popup-read', e); }
   };
 
   return (
@@ -1483,14 +1499,13 @@ const safeJson = async (res: Response) => {
         )}
 
         <View style={s.homeShovelWrap}>
-          <TouchableOpacity onPress={openDiary} style={s.shovelCircle}>
+          <TouchableOpacity testID="write-fragment" accessibilityLabel="寫小日記" onPress={openDiary} style={s.shovelCircle}>
             <Image source={require('./assets/shovel.png')} style={{ width: 60, height: 60 }} resizeMode="contain" />
           </TouchableOpacity>
         </View>
       </ImageBackground>
 
-      <Modal visible={noticeOpen} transparent animationType="fade" onRequestClose={() => setNoticeOpen(false)}>
-        <View style={s.noticeOverlay}>
+      <DismissibleModal visible={noticeOpen} animationType="fade" onClose={() => setNoticeOpen(false)} overlayStyle={s.noticeOverlay}>
           <View style={s.noticeCard}>
             <TouchableOpacity style={s.noticeClose} onPress={() => setNoticeOpen(false)}><Text style={s.noticeCloseText}>×</Text></TouchableOpacity>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
@@ -1515,8 +1530,7 @@ const safeJson = async (res: Response) => {
               <TouchableOpacity style={s.noticeClear} onPress={() => setNoticeOpen(false)}><Text style={s.noticeClearText}>我知道了</Text></TouchableOpacity>
             </View>
           </View>
-        </View>
-      </Modal>
+      </DismissibleModal>
       {birthdayPopup && <AchievementPopup popup={birthdayPopup} onClose={dismissBirthdayPopup} />}
     </View>
   );
@@ -1526,20 +1540,74 @@ const safeJson = async (res: Response) => {
 // DiaryScreen
 // ─────────────────────────────────────────────────────────
 function DiaryScreen({ navigation }: any) {
-  const { token } = useContext(AuthContext);
+  const { token, username } = useContext(AuthContext);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<LocalFeedback | null>(null);
+  const [progress, setProgress] = useState('');
+  const [retryEntry, setRetryEntry] = useState<PhoneDiary | null>(null);
+  const contentRef = useRef('');
+  const busyRef = useRef(false);
+  const editRevision = useRef(0);
+  const updateContent = (text: string) => { contentRef.current = text; editRevision.current += 1; setContent(text); };
+
+  useEffect(() => {
+    let active = true;
+    let refreshing = false;
+    const restoreAndSync = async () => {
+      if (refreshing || busyRef.current) return;
+      refreshing = true;
+      const revision = editRevision.current;
+      try {
+        const entry = await latestRecoverableFragment(username);
+        // Never replace text entered while the asynchronous storage read ran.
+        if (active && entry && !busyRef.current && !contentRef.current.trim() && editRevision.current === revision) {
+          updateContent(entry.content); setRetryEntry(entry); setResult(null);
+          setProgress('已帶回上次未完成的心情，可以繼續分享。');
+        }
+        const pending = await pendingPhoneDiaries(username);
+        for (const saved of pending) {
+          if (!active || saved.kind !== 'fragment') continue;
+          try {
+            await saveFragmentOriginal(BASE_URL, token, saved);
+            if (saved.result && saved.result.status !== 'unavailable') {
+              await syncPhoneFeedback(BASE_URL, token, saved, saved.result);
+              await savePhoneDiary({ ...saved, syncStatus: 'synced' });
+            }
+          } catch { /* Retry successful feedback quietly next time; keep originals. */ }
+        }
+      } catch (error) { logBackgroundRequestFailure('diary-recovery', error); }
+      finally { refreshing = false; }
+    };
+    void restoreAndSync();
+    const unsubscribe = navigation.addListener('focus', () => { void restoreAndSync(); });
+    const subscription = AppState.addEventListener('change', state => { if (state === 'active') void restoreAndSync(); });
+    return () => { active = false; unsubscribe(); subscription.remove(); };
+  }, [username, token, navigation]);
 
   const handleAnalyze = async () => {
+    if (busyRef.current) return;
     if (!content.trim()) { Alert.alert('請先寫下一點今天的心情'); return; }
-    setLoading(true);
+    busyRef.current = true;
+    setLoading(true); setResult(null); setProgress('小島精靈正在思考...');
+    const entry = retryEntry?.content === content.trim() ? retryEntry : newPhoneDiary(username, content, 'fragment');
+    setRetryEntry(entry);
     try {
-      const res = await fetch(`${BASE_URL}/diary`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify({ content: content.trim() }) });
-      const data = await res.json();
-      if (res.ok) { setResult(data); setContent(''); }
-      else Alert.alert('送出失敗', data.detail || '請稍後再試');
-    } catch { Alert.alert('無法連接到後端伺服器'); } finally { setLoading(false); }
+      await savePhoneDiary(entry);
+      const originalSave = saveFragmentOriginal(BASE_URL, token, entry).then(() => true, () => false);
+      const feedback = await runImmediateSupport(entry.content, phoneSLM);
+      const saved: PhoneDiary = { ...entry, result: feedback, syncStatus: 'pending' };
+      await savePhoneDiary(saved); setResult(feedback);
+      if (feedback.status !== 'unavailable') {
+        updateContent(''); setRetryEntry(null); setProgress(''); selectionFeedback();
+        void (async () => {
+          if (!(await originalSave)) await saveFragmentOriginal(BASE_URL, token, saved);
+          await syncPhoneFeedback(BASE_URL, token, saved, feedback);
+          await savePhoneDiary({ ...saved, syncStatus: 'synced' });
+        })().catch(() => undefined); // Retry quietly next visit, without blocking local feedback.
+      } else setProgress('暫時無法完成回覆，內容已保留，可以稍後再分享。');
+    } catch { setProgress('本次未完成，請保留輸入框中的內容後重試。'); }
+    finally { busyRef.current = false; setLoading(false); }
   };
 
   return (
@@ -1550,9 +1618,8 @@ function DiaryScreen({ navigation }: any) {
           <Text style={[s.title, { fontSize: 24, textAlign: 'center', marginTop: -42 }]}>寫小日記</Text>
           <View style={{ height: 90 }} />
           <Text style={[s.title, { fontSize: 22, textAlign: 'center' }]}>今天發生了什麼事呢？</Text>
-          <Text style={[s.body, { textAlign: 'center', color: C.sub, marginBottom: 22 }]}>可以分很多次分享，小島精靈會在晚上幫你整理成今天日記。</Text>
           <View style={s.diaryBox}>
-            <TextInput style={s.diaryInput} placeholder="寫下一小段心情、事件、想法..." placeholderTextColor={C.muted} value={content} onChangeText={setContent} multiline maxLength={1000} textAlignVertical="top" />
+            <TextInput testID="fragment-content" style={s.diaryInput} placeholder="寫下一小段心情、事件、想法..." placeholderTextColor={C.muted} value={content} onChangeText={updateContent} editable={!loading} multiline maxLength={1000} textAlignVertical="top" />
             <Text style={s.wordCount}>{content.length} / 1000</Text>
           </View>
           <View style={s.tipCard}>
@@ -1562,36 +1629,52 @@ function DiaryScreen({ navigation }: any) {
               <Text style={[s.body, { color: C.sub }]}>不需要一次寫完，想到什麼就慢慢補給小島精靈。</Text>
             </View>
           </View>
-          <TouchableOpacity style={[s.primaryBtn, loading && { opacity: 0.65 }]} onPress={handleAnalyze} disabled={loading}>
+          <TouchableOpacity testID="fragment-submit" style={[s.primaryBtn, loading && { opacity: 0.65 }]} onPress={handleAnalyze} disabled={loading}>
             {loading ? <ActivityIndicator color="white" /> : <Text style={s.primaryBtnText}>分享我的心情給小島精靈</Text>}
           </TouchableOpacity>
-          {result && (
-            <View style={s.elfFeedbackWrap}>
-              <View style={s.elfSmallCard}><Text style={s.label}>安慰</Text><Text style={s.body}>{result.comfort || result.feedback || '今天辛苦了，謝謝你願意分享。'}</Text></View>
-              <View style={s.elfSmallCard}><Text style={s.label}>建議你可以...</Text>{(result.suggestions || ['喝一點水', '慢慢呼吸一下']).slice(0, 3).map((x: string) => <Text key={x} style={s.body}>・{x}</Text>)}</View>
-              <View style={s.elfBlessCard}><Image source={require('./assets/elves.png')} style={{ width: 70, height: 70, marginRight: 12 }} resizeMode="contain" /><View style={{ flex: 1 }}><Text style={s.label}>小島精靈想對你說...</Text><Text style={s.body}>{result.blessing || '願你今天被溫柔接住，明天也能慢慢長出新的力量。'}</Text></View></View>
-            </View>
-          )}
+          {!!progress && <Text accessibilityLiveRegion="polite" style={[s.body, { marginTop: 12 }]}>{progress}</Text>}
+          {result && <ElfFeedback result={result} />}
         </ScrollView>
       </ScreenBg>
     </KeyboardAvoidingView>
   );
 }
 
+function ElfFeedback({ result }: { result: Partial<LocalFeedback> & { feedback?: string } }) {
+  return <View style={s.elfFeedbackWrap}>
+    <View testID="elf-feedback" style={s.elfSmallCard}>
+      <Text style={s.label}>小島精靈有話想說</Text>
+      <Text style={s.body}>{result.comfort || result.feedback || '尚無回饋，請返回重試。'}</Text>
+      {!!result.blessing && <Text style={[s.body, { marginTop: 10 }]}>{result.blessing}</Text>}
+      {result.response_mode === 'SAFE_MODE' && <SafetyResources />}
+    </View>
+    {!!result.suggestions?.length && <View style={s.elfSmallCard}>
+      <Text style={s.label}>你可以考慮...</Text>
+      {result.suggestions.map((suggestion, index) => <Text key={index} style={s.body}>・{suggestion}</Text>)}
+    </View>}
+  </View>;
+}
+
 // ─────────────────────────────────────────────────────────
 // AIAnalysisScreen
 // ─────────────────────────────────────────────────────────
 function AIAnalysisScreen({ navigation, route }: any) {
-  const { result } = route.params || {};
+  const { result, record, syncPending } = route.params || {};
   return (
     <ScreenBg source={require('./assets/Sentiment_Analysis.png')}>
       <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 58, paddingBottom: 80 }}>
         <BackButton onPress={() => navigation.navigate('MainTabs', { screen: 'HomeTab' })} />
         <Text style={[s.title, { fontSize: 24, textAlign: 'center', marginTop: -42 }]}>小島精靈回覆</Text>
         <View style={{ height: 70 }} />
-        <View style={s.elfSmallCard}><Text style={s.label}>安慰</Text><Text style={s.body}>{result?.comfort || result?.feedback || '今天辛苦了，謝謝你願意分享。'}</Text></View>
-        <View style={s.elfSmallCard}><Text style={s.label}>建議你可以...</Text>{(result?.suggestions || ['喝一點水', '慢慢呼吸一下']).slice(0, 3).map((x: string) => <Text key={x} style={s.body}>・{x}</Text>)}</View>
-        <View style={s.elfBlessCard}><Image source={require('./assets/elves.png')} style={{ width: 78, height: 78, marginRight: 12 }} resizeMode="contain" /><View style={{ flex: 1 }}><Text style={s.label}>小島精靈想對你說...</Text><Text style={s.body}>{result?.blessing || '願你今天被溫柔接住，明天也能慢慢長出新的力量。'}</Text></View></View>
+        {syncPending && <Text testID="local-analysis-pending-sync" style={[s.body, { marginBottom: 16 }]}>本機分析已完成，結果已保留，雲端尚未同步。</Text>}
+        {result?.classification_available && result?.scores && <View testID="phone-classification-result" style={s.resultCard}>
+          <Text style={s.label}>今日情緒分布</Text>
+          <EmotionBarChart scores={result.scores} />
+        </View>}
+        <ElfFeedback result={result || {}} />
+        {record && <TouchableOpacity testID="view-daily-analysis" style={s.primaryBtn} onPress={() => navigation.navigate('DayAnalysis', { date: record.date, record })}>
+          <Text style={s.primaryBtnText}>查看當日分析　›</Text>
+        </TouchableOpacity>}
       </ScrollView>
     </ScreenBg>
   );
@@ -1623,14 +1706,25 @@ function CalendarScreen({ navigation }: any) {
   const fetchRecords = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${BASE_URL}/history`, { headers: { 'Authorization': `Bearer ${token}` } });
+      const res = await fetchWithWakeRetry(`${BASE_URL}/history`, { headers: { 'Authorization': `Bearer ${token}` } });
       const data = await res.json();
       setRecords((Array.isArray(data) ? data : []).map(toTreeRecord));
-    } catch (e) { console.error(e); } finally { setLoading(false); }
+    } catch (e) { logBackgroundRequestFailure('calendar-history', e); } finally { setLoading(false); }
   };
 
   const recordByDay = (day: number) => records.find(r => recordMatchesMonth(r, year, month) && Number(r.date?.slice(8, 10)) === day);
-  const openDay = (day: number) => navigation.navigate('DayTree', { date: getDateKey(year, month, day), record: recordByDay(day) || null });
+  const openDay = async (day: number) => {
+    const date = getDateKey(year, month, day);
+    try {
+      // Re-read before opening a date: the tab can remain mounted under the
+      // daily editor while the newly committed analysis changes its tree.
+      const rows = await getMobile(BASE_URL, token, '/history');
+      const refreshed = (Array.isArray(rows) ? rows : []).map(toTreeRecord);
+      setRecords(refreshed);
+      const record = refreshed.find(r => r.date === date);
+      navigation.navigate(record ? 'DayTree' : 'DailyDiaryEdit', { date, record: record || null });
+    } catch { Alert.alert('尚未讀取這天的日記', '請稍後再試，避免開啟尚未更新的內容。'); }
+  };
 
   if (loading) return <View style={[s.center, { backgroundColor: C.bg }]}><ActivityIndicator color={C.accent} /></View>;
 
@@ -1645,10 +1739,10 @@ function CalendarScreen({ navigation }: any) {
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.weekScrollTuned}>
           {weeks.map((week) => {
-            const complete = isWeekComplete(records, year, month, week);
+            const complete = hasWeekAnalysis(records, year, month, week);
             const { startDay, endDay } = getMonthWeekRange(year, month, week);
             return (
-              <TouchableOpacity key={week} style={[s.weekCardTuned, !complete && s.weekCardDisabled]} activeOpacity={complete ? 0.85 : 1} disabled={!complete} onPress={() => complete && navigation.navigate('WeeklyAnalysis', { week, year, month, startDay, endDay })}>
+              <TouchableOpacity key={week} testID={`week-${week}`} style={[s.weekCardTuned, !complete && s.weekCardDisabled]} activeOpacity={complete ? 0.85 : 1} disabled={!complete} onPress={() => complete && navigation.navigate('WeeklyAnalysis', { week, year, month, startDay, endDay })}>
                 <Text style={[s.weekCardTitleTuned, !complete && { opacity: 0.45 }]}>第{week}週</Text>
                 <Text style={[s.weekCardSubTuned, !complete && { opacity: 0.45 }]}>週狀態</Text>
                 <View style={[s.weekStatusLineTuned, !complete && s.weekStatusLineMuted]} />
@@ -1664,7 +1758,7 @@ function CalendarScreen({ navigation }: any) {
           {calendarCells.map((day, idx) => {
             const rec = day ? recordByDay(day) : null;
             return (
-              <TouchableOpacity key={idx} disabled={!day} style={s.calendarCellTuned} onPress={() => day && openDay(day)}>
+              <TouchableOpacity key={idx} testID={day ? `calendar-${getDateKey(year, month, day)}` : undefined} accessibilityLabel={day ? `${getDateKey(year, month, day)}${rec ? ' 心情樹' : ' 整理日記'}` : undefined} disabled={!day} style={s.calendarCellTuned} onPress={() => day && openDay(day)}>
                 <Text style={s.calendarDayTextTuned}>{day || ''}</Text>
                 {rec
                   ? <Image source={MOOD_TREE[rec.mood]?.img || MOOD_TREE.Joy.img} style={s.calendarTreeTuned} resizeMode="contain" />
@@ -1674,10 +1768,9 @@ function CalendarScreen({ navigation }: any) {
             );
           })}
         </View>
-        <Text style={s.calendarHintTuned}>點擊日期，查看當天心情小樹</Text>
+        <Text style={s.calendarHintTuned}>點擊日期，整理當天日記或查看心情小樹</Text>
       </ScrollView>
-      <Modal visible={monthPickerOpen} transparent animationType="fade" onRequestClose={() => setMonthPickerOpen(false)}>
-        <View style={s.noticeOverlay}>
+      <DismissibleModal visible={monthPickerOpen} animationType="fade" onClose={() => setMonthPickerOpen(false)} overlayStyle={s.noticeOverlay}>
           <View style={s.monthPickerCard}>
             <Text style={s.noticeTitle}>選擇月份</Text>
             <View style={s.yearSwitcher}>
@@ -1693,8 +1786,7 @@ function CalendarScreen({ navigation }: any) {
               ))}
             </View>
           </View>
-        </View>
-      </Modal>
+      </DismissibleModal>
     </ScreenBg>
   );
 }
@@ -1719,10 +1811,10 @@ function DayTreeScreen({ navigation, route }: any) {
     const loadFavoriteState = async () => {
       if (!token || !rec?.id) return;
       try {
-        const res = await fetch(`${BASE_URL}/favorites`, { headers: { Authorization: `Bearer ${token}` } });
+        const res = await fetchWithWakeRetry(`${BASE_URL}/favorites`, { headers: { Authorization: `Bearer ${token}` } });
         const data = await res.json();
         setFavorited(Array.isArray(data) && data.some((item: any) => item.analysisId === rec.id || item.analysis?.id === rec.id));
-      } catch (e) { console.error(e); }
+      } catch (e) { logBackgroundRequestFailure('day-tree-favorite', e); }
     };
     loadFavoriteState();
   }, [token, rec?.id]);
@@ -1760,11 +1852,11 @@ function DayTreeScreen({ navigation, route }: any) {
               <Text style={s.body}>{topVal}%</Text>
             </View>
             <TouchableOpacity style={s.resultCard} onPress={() => navigation.navigate('DailyDiaryView', { date: rec.date, record: rec, diary: dailyText })} activeOpacity={0.86}>
-              <Text style={s.label}>今日小語</Text>
+              <Text testID="daily-tree-summary" style={s.label}>今日小語</Text>
               <Text style={[s.body, { marginTop: 8 }]}>{rec.summary || '這一天的小日記已整理成今天日記。'}</Text>
               <Text style={[s.mini, { color: C.accent, marginTop: 10 }]}>點一下查看當天日記</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[s.primaryBtn, { backgroundColor: '#E8E0D5' }]} onPress={() => navigation.navigate('DayAnalysis', { date: rec.date, record: rec })}>
+            <TouchableOpacity testID="daily-tree-analysis" style={[s.primaryBtn, { backgroundColor: '#E8E0D5' }]} onPress={() => navigation.navigate('DayAnalysis', { date: rec.date, record: rec })}>
               <Text style={[s.primaryBtnText, { color: C.text }]}>查看當日分析　›</Text>
             </TouchableOpacity>
           </>
@@ -1780,8 +1872,11 @@ function DayTreeScreen({ navigation, route }: any) {
 }
 
 function DailyDiaryViewScreen({ navigation, route }: any) {
+  const { token } = useContext(AuthContext);
+  const [sourceEntries, setSourceEntries] = useState<any[]>([]);
   const { date, record, diary } = route.params || {};
   const rec: TreeRecord | null = record || null;
+  useEffect(() => { if (date) void getMobile(BASE_URL, token, `/mobile/daily/${date}/sources`).then(d => setSourceEntries(d.sources || [])).catch(() => undefined); }, [date, token]);
   const content = diary || rec?.raw?.daily_content || rec?.raw?.final_content || rec?.summary || '目前沒有統整日記內容。';
   return (
     <ScreenBg source={require('./assets/journal.png')}>
@@ -1796,6 +1891,8 @@ function DailyDiaryViewScreen({ navigation, route }: any) {
         >
           <Text style={s.fullDiaryTitle}>當天完整日記</Text>
           <Text style={s.fullDiaryBody}>{content}</Text>
+          <Text style={[s.label, { marginTop: 24 }]}>原始小日記</Text>
+          {sourceEntries.map(x => <View key={x.id} style={s.resultCard}><Text style={s.mini}>{new Date(x.timestamp).toLocaleString('zh-TW')}</Text><Text style={s.body}>{x.content}</Text></View>)}
         </ScrollView>
         {rec && (
           <TouchableOpacity style={s.fullDiaryBottomBtn} onPress={() => navigation.navigate('DayAnalysis', { date: rec.date, record: rec })}>
@@ -1829,7 +1926,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
         {/* 主要情緒卡片 */}
         <View style={[s.resultCard, { flexDirection: 'row', alignItems: 'center', marginTop: 30 }]}>
           <Image source={treeInfo.img} style={{ width: 150, height: 150 }} resizeMode="contain" />
-          <View style={{ flex: 1, marginLeft: 18 }}>
+          <View testID="daily-main-emotions" accessible accessibilityLabel={top.map(([k,v]) => `${EC[k]?.l || k} ${v}%`).join('，')} style={{ flex: 1, marginLeft: 18 }}>
             <Text style={[s.label, { fontSize: 20, lineHeight: 30 }]}>主要情緒</Text>
             {top.map(([k, v]) => (
               <Text key={k} style={[s.body, { color: EC[k]?.c || C.text, fontSize: 19, lineHeight: 31 }]}>
@@ -1859,217 +1956,64 @@ function DayAnalysisScreen({ navigation, route }: any) {
 // ─────────────────────────────────────────────────────────
 function WeeklyAnalysisScreen({ navigation, route }: any) {
   const { token } = useContext(AuthContext);
-  const week = route?.params?.week || 1;
-  const year = route?.params?.year || 2026;
-  const month = route?.params?.month || 5;
-  const startDay = route?.params?.startDay || (week - 1) * 7 + 1;
-  const endDay = route?.params?.endDay || Math.min(startDay + 6, new Date(year, month, 0).getDate());
-
-  const [records, setRecords] = useState<TreeRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  // activeIndex 由折線圖的 onDayChange 更新
-  const [activeIndex, setActiveIndex] = useState(0);
-
-  useEffect(() => { if (token) fetchWeekRecords(); }, [token, week, year, month, startDay, endDay]);
-
-  const fetchWeekRecords = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch(`${BASE_URL}/history`, { headers: { Authorization: `Bearer ${token}` } });
-      const data = await res.json();
-      const allRecords = (Array.isArray(data) ? data : []).map(toTreeRecord);
-      const weekRecords = allRecords
-        .filter((r: TreeRecord) => {
-          const d = Number(r.date?.slice(8, 10));
-          return recordMatchesMonth(r, year, month) && d >= startDay && d <= endDay;
-        })
-        .sort((a: TreeRecord, b: TreeRecord) => a.date.localeCompare(b.date));
-      setRecords(weekRecords);
-      setActiveIndex(weekRecords.length - 1);
-    } catch (e) { console.error(e); } finally { setLoading(false); }
-  };
-
-  if (loading) {
-    return <View style={[s.center, { backgroundColor: C.bg }]}><ActivityIndicator color={C.accent} /></View>;
-  }
-
-  if (records.length < 7) {
-    return (
-      <ScreenBg source={require('./assets/Weekly_Analysis.png')}>
-        <View style={{ flex: 1, paddingHorizontal: 24, paddingTop: 56 }}>
-          <BackButton onPress={() => navigation.navigate('MainTabs', { screen: 'TrendTab' })} />
-          <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>情緒走勢</Text>
-          <View style={s.weekEmptyCard}>
-            <Text style={s.weekEmptyTitle}>第{week}週心情趨勢尚未完成 🌱</Text>
-            <Text style={s.weekEmptyText}>這一週需要完整記錄 {month}/{startDay}～{month}/{endDay}，才會產生週狀態折線圖。</Text>
-            <Text style={s.weekEmptyText}>目前已完成 {records.length} / 7 天。</Text>
-          </View>
-        </View>
-      </ScreenBg>
-    );
-  }
-
-  const si = Math.min(activeIndex, records.length - 1);
-  const at = records[si];
-  const dominantMood = at?.mood || 'Joy';
-  const treeInfo = MOOD_TREE[dominantMood] || MOOD_TREE.Joy;
-  const scores = norm(at?.scores || {});
-  const top3 = getTopEmotions(scores, 3);
-
-  const tagGroups = getTagGroups(at?.raw);
-  const stList = tagGroups.st;
-  const btList = tagGroups.bt;
-  const jtList = tagGroups.jt;
-
-  return (
-    <ScreenBg source={require('./assets/Weekly_Analysis.png')}>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 90 }}>
-        <BackButton onPress={() => navigation.navigate('MainTabs', { screen: 'TrendTab' })} />
-        <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>情緒走勢</Text>
-
-        <Text style={[s.title, { fontSize: 22, marginTop: 28 }]}>第{week}週心情趨勢 🌱</Text>
-        <Text style={[s.body, { color: C.sub, marginBottom: 16 }]}>
-          {month}/{startDay}～{month}/{endDay}，拖動輔助線查看當天詳情
-        </Text>
-        <Text style={[s.mini, { color: '#ccc', textAlign: 'center', marginBottom: 10 }]}>
-          綜合正負情緒計算出每日情緒分數，拖動輔助線查看當天詳情
-        </Text>
-
-        {/* ── 折線圖（完整對齊 HTML lineC）── */}
-        <View style={s.resultCard}>
-          <EmotionLineChart
-            records={records}
-            month={month}
-            year={year}
-            onDayChange={(idx) => setActiveIndex(idx)}
-          />
-        </View>
-
-        <TouchableOpacity
-          style={[s.primaryBtn, { marginTop: 0, marginBottom: 14 }]}
-          onPress={() => navigation.navigate('WeeklyImpact', { records, week, month, startDay, endDay })}
-          activeOpacity={0.86}
-        >
-          <Text style={s.primaryBtnText}>查看事件影響情緒原因　›</Text>
-        </TouchableOpacity>
-
-        {/* ── Detail Card（對齊 HTML dcard）── */}
-        <View style={s.resultCard}>
-          {/* 日期 + 主要情緒 badges */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-            <View style={{ flex: 1 }}>
-              <Text style={[s.label, { color: C.accent }]}>{at.date}</Text>
-              <Text style={[s.body, { color: C.sub, marginTop: 4 }]}>{at.summary || ''}</Text>
-            </View>
-            <Image source={treeInfo.img} style={{ width: 72, height: 72 }} resizeMode="contain" />
-          </View>
-
-          {/* Dominant emotion badges（對齊 HTML renderDom）*/}
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-            {top3.map(([k, v]) => (
-              <View key={k} style={[s.emoBadge, { backgroundColor: EC[k].c + '22' }]}>
-                <Text style={[s.mini, { color: EC[k].c, fontFamily: FONT_BOLD }]}>
-                  {EC[k].l} {v}%
-                </Text>
-              </View>
-            ))}
-          </View>
-
-          {/* Tags（對齊 HTML renderTags）*/}
-          {stList.length > 0 && (
-            <>
-              <Text style={s.sectionLabel}>壓力來源</Text>
-              {stList.map((t: any, i: number) => (
-                <View key={i} style={s.tagRow}>
-                  <View style={[s.pill, { backgroundColor: '#D85A3022' }]}>
-                    <Text style={[s.mini, { color: '#D85A30' }]}>{TL[t.t] || t.t}</Text>
-                  </View>
-                  <Text style={[s.body, { flex: 1 }]}>{t.r}</Text>
-                </View>
-              ))}
-            </>
-          )}
-          {btList.length > 0 && (
-            <>
-              <Text style={s.sectionLabel}>情緒緩衝</Text>
-              {btList.map((t: any, i: number) => (
-                <View key={i} style={s.tagRow}>
-                  <View style={[s.pill, { backgroundColor: '#1D9E7522' }]}>
-                    <Text style={[s.mini, { color: '#1D9E75' }]}>{TL[t.t] || t.t}</Text>
-                  </View>
-                  <Text style={[s.body, { flex: 1 }]}>{t.r}</Text>
-                </View>
-              ))}
-            </>
-          )}
-          {jtList.length > 0 && (
-            <>
-              <Text style={s.sectionLabel}>快樂來源</Text>
-              {jtList.map((t: any, i: number) => (
-                <View key={i} style={s.tagRow}>
-                  <View style={[s.pill, { backgroundColor: '#7F77DD22' }]}>
-                    <Text style={[s.mini, { color: '#7F77DD' }]}>{TL[t.t] || t.t}</Text>
-                  </View>
-                  <Text style={[s.body, { flex: 1 }]}>{t.r}</Text>
-                </View>
-              ))}
-            </>
-          )}
-          {stList.length === 0 && btList.length === 0 && jtList.length === 0 && (
-            <Text style={[s.mini, { color: '#bbb' }]}>這天沒有記錄標籤資料</Text>
-          )}
-        </View>
-      </ScrollView>
-    </ScreenBg>
-  );
+  const now = new Date();
+  const year = route.params?.year || now.getFullYear(), month = route.params?.month || now.getMonth() + 1;
+  const startDay = route.params?.startDay || ((route.params?.week || 1) - 1) * 7 + 1;
+  const start = `${year}-${String(month).padStart(2, '0')}-${String(startDay).padStart(2, '0')}`;
+  const [review, setReview] = useState<WeekReview | null>(null);
+  const [error, setError] = useState('');
+  const [emotion, setEmotion] = useState('Joy');
+  const [selected, setSelected] = useState(0);
+  useEffect(() => {
+    void getMobile(BASE_URL, token, `/mobile/weekly/${start}`).then(setReview).catch(() => setError('本週資料尚未讀取，請稍後重試。'));
+  }, [token, start]);
+  const day = review?.days[selected];
+  const paths = review ? trendPaths(review.days, emotion) : [];
+  const record = day?.analysis ? toTreeRecord(day.analysis) : null;
+  return <ScreenBg source={require('./assets/Weekly_Analysis.png')}><ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 90 }}>
+    <BackButton onPress={() => navigation.goBack()} /><Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>情緒走勢</Text>
+    {!!error && <Text style={s.body}>{error}</Text>}
+    {!review && !error && <ActivityIndicator color={C.accent} />}
+    {review && <>
+      <Text testID="weekly-status" style={[s.body, { marginTop: 28 }]}>七天中已有 {review.analyzed_days} 天正式分析。缺少的日期標示為無紀錄。</Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 16 }}>{Object.keys(EC).map(key => <TouchableOpacity key={key} style={[s.pill, { backgroundColor: EC[key].c + (emotion === key ? '66' : '22') }]} onPress={() => setEmotion(key)}><Text style={s.body}>{EC[key].l}</Text></TouchableOpacity>)}</View>
+      <View style={s.resultCard}>
+        <Text style={s.label}>{EC[emotion].l}分類比例</Text>
+        <Svg viewBox="-28 -18 324 205" width="100%" height={230}>
+          {[0, 0.5, 1].map(v => <G key={v}><Line x1={0} x2={280} y1={150 * (1 - v)} y2={150 * (1 - v)} stroke="#ddd" /><SvgText x={-4} y={150 * (1 - v) + 4} fontSize={9} textAnchor="end" fill="#888">{v * 100}%</SvgText></G>)}
+          {paths.map((path, i) => <Path key={i} d={path} stroke={EC[emotion].c} strokeWidth={2} fill="none" />)}
+          {review.days.map((x, i) => <G key={x.date} onPress={() => setSelected(i)}>
+            <Rect x={i * 280 / 6 - 16} y={0} width={32} height={180} fill="transparent" />
+            {x.status === 'analyzed' && <Circle cx={i * 280 / 6} cy={150 * (1 - x.analysis.scores[emotion])} r={selected === i ? 5 : 3} fill={EC[emotion].c} />}
+            <SvgText x={i * 280 / 6} y={170} fontSize={9} textAnchor="middle" fill="#777">{x.date.slice(5)}</SvgText>
+          </G>)}
+        </Svg>
+      </View>
+      <View style={s.resultCard}><Text style={s.label}>{day?.date}</Text>
+        {record ? <>
+          <Text style={s.body}>{record.summary}</Text>
+          <TouchableOpacity onPress={() => navigation.navigate('DayTree', { date: record.date, record })}><Text style={[s.body, { color: C.accent }]}>查看當日心情樹、日記與分析 ›</Text></TouchableOpacity>
+        </> : <Text style={s.body}>無紀錄</Text>}
+      </View>
+      <TouchableOpacity style={s.primaryBtn} onPress={() => navigation.navigate('WeeklyImpact', { review })}><Text style={s.primaryBtnText}>本週主要影響因素 ›</Text></TouchableOpacity>
+    </>}
+  </ScrollView></ScreenBg>;
 }
 
-// ─────────────────────────────────────────────────────────
-// WeeklyImpactScreen
-// ─────────────────────────────────────────────────────────
 function WeeklyImpactScreen({ navigation, route }: any) {
-  const { records = [], week, month, startDay, endDay } = route.params || {};
-  const impact = aggregateImpact(records);
-
-  const renderImpactGroup = (title: string, lead: string, list: any[], color: string) => (
-    <View style={s.resultCard}>
-      <Text style={[s.label, { color }]}>{title}</Text>
-      <Text style={[s.body, { color: C.sub, marginTop: 6, marginBottom: 12 }]}>{lead}</Text>
-      {list.length ? list.map((item: any, index: number) => (
-        <View key={`${title}-${item.tag}`} style={{ marginTop: index === 0 ? 0 : 14 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-            <View style={[s.pill, { backgroundColor: color + '22' }]}>
-              <Text style={[s.mini, { color, fontFamily: FONT_BOLD }]}>{item.label}</Text>
-            </View>
-            <Text style={[s.body, { color, fontFamily: FONT_BOLD }]}>{item.percent}%</Text>
-          </View>
-          <View style={{ height: 8, borderRadius: 8, backgroundColor: '#EEE8DE', overflow: 'hidden', marginBottom: 6 }}>
-            <View style={{ width: `${Math.max(4, item.percent)}%` as DimensionValue, height: 8, backgroundColor: color, borderRadius: 8 }} />
-          </View>
-          <Text style={[s.mini, { color: C.sub }]}>
-            {item.reasons.slice(0, 2).join('；') || '這週有此類事件，但 MongoDB 尚未儲存原因。'}
-          </Text>
-        </View>
-      )) : (
-        <Text style={[s.mini, { color: '#aaa' }]}>這週沒有足夠的標籤資料。</Text>
-      )}
-    </View>
-  );
-
-  return (
-    <ScreenBg source={require('./assets/Weekly_Analysis.png')}>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 90 }}>
-        <BackButton onPress={() => navigation.goBack()} />
-        <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>事件影響統整</Text>
-        <Text style={[s.body, { color: C.sub, marginTop: 28, marginBottom: 16 }]}>
-          第{week}週 {month}/{startDay}～{month}/{endDay}，依照每日標籤與情緒分數統整。
-        </Text>
-        {renderImpactGroup('負面情緒值最高的事件', '系統統計這週面對哪些壓力來源時，低落、焦慮、憤怒等負向情緒最明顯。', impact.stressors, '#D85A30')}
-        {renderImpactGroup('開心與放鬆值最高的事件', '系統統計這週哪些事件最常伴隨喜悅、信任、期待等正向情緒。', impact.joys, '#7A9E6A')}
-        {renderImpactGroup('情緒緩衝值最高的來源', '系統統計這週哪些支持或休息來源，最能緩衝情緒壓力。', impact.buffers, '#4E8FA8')}
-      </ScrollView>
-    </ScreenBg>
-  );
+  const review: WeekReview | undefined = route.params?.review;
+  return <ScreenBg source={require('./assets/Weekly_Analysis.png')}><ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 90 }}>
+    <BackButton onPress={() => navigation.goBack()} /><Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>本週主要影響因素</Text>
+    <Text style={[s.body, { marginTop: 24 }]}>依正式日記整理事件與情緒共同出現的線索，不代表因果關係。</Text>
+    {review?.recurring_factors.length ? review.recurring_factors.map((factor, index) => <View key={index} style={s.resultCard}>
+      <Text style={s.label}>{factor.topic} · {({ stressor: '壓力來源', buffer: '緩衝來源', joy: '正向來源' } as any)[factor.type]}</Text>
+      <Text style={s.mini}>出現於 {new Set(factor.occurrences.map((x: any) => x.date)).size} 天</Text>
+      {factor.occurrences.map((x: any, j: number) => <TouchableOpacity key={j} style={{ marginTop: 12 }} onPress={() => {
+        const day = review.days.find(d => d.date === x.date);
+        if (day?.analysis) navigation.navigate('DayTree', { date: x.date, record: toTreeRecord(day.analysis) });
+      }}><Text style={[s.body, { color: C.accent }]}>{x.date}　{x.emotions.map((e: string) => EC[e]?.l || e).join('、')} ›</Text><Text style={s.body}>{x.event}</Text><Text style={s.mini}>依據：「{x.evidence}」</Text></TouchableOpacity>)}
+    </View>) : <Text style={s.body}>本週尚無可核對原文的影響因素。</Text>}
+  </ScrollView></ScreenBg>;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -2077,8 +2021,7 @@ function WeeklyImpactScreen({ navigation, route }: any) {
 // ─────────────────────────────────────────────────────────
 function OptionModal({ visible, title, options, suffix = '', onPick, onClose }: any) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={s.noticeOverlay}>
+    <DismissibleModal visible={visible} animationType="fade" onClose={onClose} overlayStyle={s.noticeOverlay}>
         <View style={s.optionCard}>
           <Text style={s.noticeTitle}>{title}</Text>
           {options.map((op: string) => (
@@ -2090,8 +2033,7 @@ function OptionModal({ visible, title, options, suffix = '', onPick, onClose }: 
             <Text style={s.avatarModalCancelText}>取消</Text>
           </TouchableOpacity>
         </View>
-      </View>
-    </Modal>
+      </DismissibleModal>
   );
 }
 
@@ -2099,6 +2041,11 @@ function WheelSelector({ options, value, onChange, suffix = '' }: any) {
   const ITEM_H = 56;
   const PAD = 82;
   const listRef = useRef<FlatList<string>>(null);
+  const lastHapticValue = useRef(String(value));
+  const chooseValue = (next: string) => {
+    if (lastHapticValue.current !== String(next)) { lastHapticValue.current = String(next); selectionFeedback(); }
+    onChange(next);
+  };
   const activeIndex = Math.max(0, options.findIndex((op: string) => String(op) === String(value)));
 
   useEffect(() => {
@@ -2110,7 +2057,7 @@ function WheelSelector({ options, value, onChange, suffix = '' }: any) {
 
   const pickByOffset = (offsetY: number) => {
     const idx = Math.max(0, Math.min(options.length - 1, Math.round(offsetY / ITEM_H)));
-    onChange(options[idx]);
+    chooseValue(options[idx]);
     listRef.current?.scrollToOffset({ offset: idx * ITEM_H, animated: true });
   };
 
@@ -2133,7 +2080,7 @@ function WheelSelector({ options, value, onChange, suffix = '' }: any) {
           const selected = String(op) === String(value);
           const idx = options.findIndex((item: string) => String(item) === String(op));
           return (
-            <TouchableOpacity key={op} style={s.wheelItem} onPress={() => { onChange(op); listRef.current?.scrollToOffset({ offset: Math.max(0, idx) * ITEM_H, animated: true }); }} activeOpacity={0.8}>
+            <TouchableOpacity key={op} style={s.wheelItem} onPress={() => { chooseValue(op); listRef.current?.scrollToOffset({ offset: Math.max(0, idx) * ITEM_H, animated: true }); }} activeOpacity={0.8}>
               <Text style={[s.wheelItemText, selected && s.wheelItemTextActive]}>{op}{suffix}</Text>
             </TouchableOpacity>
           );
@@ -2144,39 +2091,79 @@ function WheelSelector({ options, value, onChange, suffix = '' }: any) {
 }
 
 function DailyDiaryEditScreen({ navigation, route }: any) {
-  const { token } = useContext(AuthContext);
-  const { date, diary } = route.params || {};
-  const [content, setContent] = useState(diary?.content || diary?.draft_content || '');
+  const { token, username } = useContext(AuthContext);
+  const date = route.params?.date;
+  const [daily, setDaily] = useState<any>(route.params?.diary);
+  const [sources, setSources] = useState<any[]>([]);
+  const [content, setContent] = useState('');
   const [loading, setLoading] = useState(false);
-
-  const save = async () => {
-    if (!content.trim()) { Alert.alert('請先留下今天日記內容'); return; }
-    setLoading(true);
-    try {
-      const res = await fetch(`${BASE_URL}/daily-diary/${date}/finalize`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ final_content: content.trim() }) });
-      const data = await res.json();
-      if (res.ok) { Alert.alert('已完成', '當日日記已完成並產生情緒分析'); navigation.navigate('MainTabs', { screen: 'TrendTab' }); }
-      else Alert.alert('儲存失敗', data.detail || '請稍後再試');
-    } catch { Alert.alert('無法連接到後端伺服器'); } finally { setLoading(false); }
+  const [progress, setProgress] = useState('');
+  const refresh = async () => {
+    const data = await getMobile(BASE_URL, token, `/mobile/daily/${date}/sources`);
+    setDaily(data.daily); setSources(data.sources || []);
+    setContent(data.daily?.final_content || data.daily?.draft_content || '');
+    return data;
   };
-
-  return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScreenBg source={require('./assets/journal.png')}>
-        <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 58, paddingBottom: 90 }}>
-          <BackButton onPress={() => navigation.goBack()} />
-          <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>編輯今天日記</Text>
-          <Text style={[s.body, { textAlign: 'center', color: C.sub, marginTop: 12, marginBottom: 22 }]}>你可以調整小島精靈整理好的內容，按下完成後才會分析柱狀圖。</Text>
-          <View style={[s.diaryBox, { minHeight: 360 }]}>
-            <TextInput style={[s.diaryInput, { minHeight: 320 }]} value={content} onChangeText={setContent} multiline textAlignVertical="top" />
-          </View>
-          <TouchableOpacity style={[s.primaryBtn, loading && { opacity: 0.65 }]} onPress={save} disabled={loading}>
-            {loading ? <ActivityIndicator color="white" /> : <Text style={s.primaryBtnText}>完成編輯並產生分析</Text>}
-          </TouchableOpacity>
-        </ScrollView>
-      </ScreenBg>
-    </KeyboardAvoidingView>
-  );
+  useEffect(() => { void refresh().catch(() => setProgress('讀取未完成，請稍後重試。')); }, [date, token]);
+  const compose = async () => {
+    setLoading(true); setProgress('小島精靈正在整理...');
+    try {
+      const data = await refresh();
+      const draft = await composePhoneDaily(data.sources);
+      await post(BASE_URL, `/mobile/daily/${date}/draft`, token, { content: draft, source_ids: data.sources.map((x: any) => x.id) });
+      await refresh(); setProgress('請確認事件與感受是否符合你的原意。');
+    } catch { setProgress('整理尚未完成，原始小日記仍保留，請稍後重試。'); }
+    finally { setLoading(false); }
+  };
+  const save = async () => {
+    if (!content.trim()) return;
+    setLoading(true); setProgress('小島精靈正在思考...');
+    try {
+      // This transition is persisted before any classifier request, including retries.
+      const confirmed = await post(BASE_URL, `/mobile/daily/${date}/confirm`, token, { content });
+      setDaily(confirmed);
+      if (confirmed.workflow_status === 'analyzed') { setProgress('此日期的分析已完成。'); return; }
+      const pending = await pendingPhoneDiaries(username);
+      const entry = pending.find(saved => saved.kind === 'daily' && saved.date === date && saved.content === confirmed.final_content)
+        ?? newPhoneDiary(username, confirmed.final_content, 'daily', date);
+      await savePhoneDiary(entry);
+      const feedback = entry.result && entry.result.status !== 'unavailable'
+        ? entry.result : await runLocalFeedback(entry.content, classifyOnPhone, phoneSLM, setProgress);
+      const saved: PhoneDiary = { ...entry, result: feedback, syncStatus: 'pending' };
+      await savePhoneDiary(saved);
+      if (feedback.status === 'unavailable') { setProgress('日記已定稿，分析尚未完成，可稍後重試。'); return; }
+      let committed;
+      try { committed = await syncPhoneFeedback(BASE_URL, token, saved, feedback); }
+      catch {
+        // Keep genuine local analysis usable while the unchanged cloud deployment awaits an update.
+        setProgress('本機分析已完成，結果已保留，雲端尚未同步。');
+        navigation.navigate('AIAnalysis', { result: feedback, record: null, syncPending: true });
+        return;
+      }
+      await savePhoneDiary({ ...saved, syncStatus: 'synced' });
+      setDaily({ ...confirmed, workflow_status: 'analyzed' });
+      setProgress(''); navigation.navigate('AIAnalysis', { result: feedback, record: committed.record ? toTreeRecord(committed.record) : null });
+    } catch { setProgress('尚未完成同步，請保留內容並重試；定稿不會重複建立。'); }
+    finally { setLoading(false); }
+  };
+  const finalized = ['finalized_pending_analysis', 'analyzed'].includes(daily?.workflow_status);
+  return <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <ScreenBg source={require('./assets/journal.png')}><ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 58, paddingBottom: 90 }}>
+      <BackButton onPress={() => navigation.goBack()} />
+      <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>{date} 日記</Text>
+      <Text style={[s.body, { marginTop: 24 }]}>{finalized ? '日記已定稿' : '先整理並確認內容，再進行情緒分析。'}</Text>
+      {daily?.confirmation_deadline && <Text style={s.mini}>確認截止：{new Date(daily.confirmation_deadline).toLocaleString('zh-TW')}</Text>}
+      {!!progress && <Text testID="daily-progress" accessibilityLiveRegion="polite" style={s.body}>{progress}</Text>}
+      {!daily && !sources.length && !progress && <Text style={s.body}>這一天還沒有小日記。</Text>}
+      {daily?.workflow_status === 'pending_aggregation' && <TouchableOpacity testID="daily-compose" style={s.primaryBtn} disabled={loading} onPress={compose}><Text style={s.primaryBtnText}>整理當天小日記</Text></TouchableOpacity>}
+      {daily && daily.workflow_status !== 'pending_aggregation' && <>
+        <View style={[s.diaryBox, { minHeight: 280 }]}><TextInput testID="daily-content" style={[s.diaryInput, { minHeight: 260 }]} value={content} onChangeText={setContent} editable={!finalized && !loading} multiline maxLength={12000} /></View>
+        <TouchableOpacity testID="daily-confirm" style={[s.primaryBtn, loading && { opacity: 0.65 }]} disabled={loading || !daily || daily.workflow_status === 'analyzed'} onPress={save}>{loading ? <ActivityIndicator color="white" /> : <Text style={s.primaryBtnText}>{daily.workflow_status === 'analyzed' ? '分析已完成' : finalized ? '繼續正式分析' : '確認定稿並分析'}</Text>}</TouchableOpacity>
+      </>}
+      <Text style={[s.label, { marginTop: 24 }]}>原始小日記（{sources.length} 則）</Text>
+      {sources.map(x => <View key={x.id} style={s.resultCard}><Text style={s.mini}>{new Date(x.timestamp).toLocaleTimeString('zh-TW')}</Text><Text style={s.body}>{x.content}</Text></View>)}
+    </ScrollView></ScreenBg>
+  </KeyboardAvoidingView>;
 }
 
 function ProfileScreen({ navigation }: any) {
@@ -2185,18 +2172,30 @@ function ProfileScreen({ navigation }: any) {
   const [favorites, setFavorites] = useState<any[]>([]);
   const [achievements, setAchievements] = useState<any[]>([]);
   const [popups, setPopups] = useState<any[]>([]);
-  const [settings, setSettings] = useState({ generate_time: '21:00', edit_window_minutes: 30 });
+  const [settings, setSettings] = useState({ generate_time: '21:00', edit_window_minutes: 30, confirmation_time: '08:00', allow_auto_finalize: false, timezone: 'Asia/Taipei' });
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingEditor, setSettingEditor] = useState<'time' | 'window' | null>(null);
+  const [settingEditor, setSettingEditor] = useState<'time' | 'confirmation' | 'timezone' | null>(null);
   const [draftGenerateTime, setDraftGenerateTime] = useState(settings.generate_time);
-  const [draftWindow, setDraftWindow] = useState(String(settings.edit_window_minutes));
+  const [draftConfirmationTime, setDraftConfirmationTime] = useState(settings.confirmation_time);
+  const [draftTimezone, setDraftTimezone] = useState(settings.timezone);
   const [avatarModalVisible, setAvatarModalVisible] = useState(false);
-  const [testingNotification, setTestingNotification] = useState(false);
+  const [testingNotification, setTestingNotification] = useState<'local' | 'remote' | null>(null);
+  const [phoneNotificationStatus, setPhoneNotificationStatus] = useState('正在讀取通知狀態');
+  const [savingSettings, setSavingSettings] = useState(false);
+  const savingSettingsRef = useRef(false);
+  const testingNotificationRef = useRef(false);
+  const feedbackPreferences = useInteractionFeedback();
+  const refreshNotificationStatus = () => notificationStatus().then(setPhoneNotificationStatus).catch(() => setPhoneNotificationStatus('暫時無法讀取通知權限'));
+  useEffect(() => {
+    void refreshNotificationStatus();
+    const subscription = AppState.addEventListener('change', state => { if (state === 'active') void refreshNotificationStatus(); });
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     setDraftGenerateTime(settings.generate_time);
-    setDraftWindow(String(settings.edit_window_minutes));
-  }, [settings.generate_time, settings.edit_window_minutes]);
+    setDraftConfirmationTime(settings.confirmation_time); setDraftTimezone(settings.timezone);
+  }, [settings.generate_time, settings.confirmation_time, settings.timezone]);
   useEffect(() => { if (token) loadProfileData(); }, [token]);
   useEffect(() => {
     const unsub = navigation.addListener('focus', () => { if (token) loadProfileData(); });
@@ -2206,71 +2205,79 @@ function ProfileScreen({ navigation }: any) {
   const loadProfileData = async () => {
     try {
       const h = { Authorization: `Bearer ${token}` };
-      const his = await fetch(`${BASE_URL}/history`, { headers: h });
+      const his = await fetchWithWakeRetry(`${BASE_URL}/history`, { headers: h });
       const hd = await his.json();
       setRecords((Array.isArray(hd) ? hd : []).map(toTreeRecord));
-      const rs = await fetch(`${BASE_URL}/daily-diary/settings`, { headers: h });
+      const rs = await fetchWithWakeRetry(`${BASE_URL}/daily-diary/settings`, { headers: h });
       const sd = await rs.json();
-      if (sd?.generate_time) setSettings(sd);
-      const favRes = await fetch(`${BASE_URL}/favorites`, { headers: h });
+      if (rs.ok && sd?.generate_time) setSettings(previous => ({ ...previous, ...sd }));
+      const favRes = await fetchWithWakeRetry(`${BASE_URL}/favorites`, { headers: h });
       const favData = await favRes.json();
       setFavorites(Array.isArray(favData) ? favData : []);
-      const achRes = await fetch(`${BASE_URL}/achievements`, { headers: h });
+      const achRes = await fetchWithWakeRetry(`${BASE_URL}/achievements`, { headers: h });
       const achData = await achRes.json();
       setAchievements(Array.isArray(achData?.achievements) ? achData.achievements : []);
       setPopups(Array.isArray(achData?.popups) ? achData.popups : []);
-    } catch (e) { console.error(e); }
+    } catch (e) { logBackgroundRequestFailure('profile-data', e); }
   };
 
-  const saveSettings = async (patch: any) => {
+  const saveSettings = async (patch: Partial<typeof settings>) => {
+    if (savingSettingsRef.current) return false;
+    savingSettingsRef.current = true; setSavingSettings(true);
     try {
-      const res = await fetch(`${BASE_URL}/daily-diary/settings`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(patch) });
+      const res = await fetchWithTimeout(`${BASE_URL}/daily-diary/settings`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(patch) });
       const data = await res.json();
-      if (res.ok) setSettings(data);
-      else Alert.alert('設定失敗', data.detail || '請稍後再試');
-    } catch { Alert.alert('網路錯誤'); }
+      if (!res.ok) {
+        Alert.alert('設定未儲存', typeof data.detail === 'string' ? data.detail : '請檢查設定內容後重試。');
+        return false;
+      }
+      setSettings(previous => ({ ...previous, ...data }));
+      return true;
+    } catch { Alert.alert('設定未儲存', '目前無法連線，請稍後再試。'); return false; }
+    finally { savingSettingsRef.current = false; setSavingSettings(false); }
   };
 
-  const openSettingEditor = (kind: 'time' | 'window') => {
+  const openSettingEditor = (kind: 'time' | 'confirmation' | 'timezone') => {
     setDraftGenerateTime(settings.generate_time);
-    setDraftWindow(String(settings.edit_window_minutes));
-    setSettingsOpen(false);
-    setTimeout(() => setSettingEditor(kind), 120);
+    setDraftConfirmationTime(settings.confirmation_time); setDraftTimezone(settings.timezone);
+    setSettingEditor(kind);
   };
 
   const saveSettingEditor = async () => {
-    if (settingEditor === 'time') await saveSettings({ generate_time: draftGenerateTime });
-    if (settingEditor === 'window') await saveSettings({ edit_window_minutes: Number(draftWindow) });
-    setSettingEditor(null);
+    if (settingEditor === 'timezone') {
+      try { new Intl.DateTimeFormat('zh-TW', { timeZone: draftTimezone.trim() }).format(); }
+      catch { Alert.alert('請確認時區', '請輸入有效的時區，例如 Asia/Taipei。'); return; }
+    }
+    const patch = settingEditor === 'time' ? { generate_time: draftGenerateTime }
+      : settingEditor === 'confirmation' ? { confirmation_time: draftConfirmationTime }
+      : { timezone: draftTimezone.trim() };
+    if (await saveSettings(patch)) { selectionFeedback(); setSettingEditor(null); }
   };
 
-  const sendTestPhoneNotification = async () => {
-    setTestingNotification(true);
+  const openSystemSettings = () => { void Linking.openSettings().catch(() => Alert.alert('無法開啟設定', '請從手機的設定 App 開啟 Emotional Island。')); };
+  const sendTestPhoneNotification = async (kind: 'local' | 'remote') => {
+    if (testingNotificationRef.current) return;
+    testingNotificationRef.current = true; setTestingNotification(kind);
     try {
-      const registration = await registerForPushNotifications(token);
-      if (!registration.ok) {
-        Alert.alert('手機通知尚未開啟', registration.message);
+      if (kind === 'local') {
+        await sendLocalTestNotification();
+        setPhoneNotificationStatus('測試將於 3 秒後出現，請查看橫幅或通知中心');
         return;
       }
-      const res = await fetch(`${BASE_URL}/push-token/test`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+      const registration = await registerForPushNotifications(token);
+      if (!registration.ok) throw new Error(registration.message);
+      const res = await fetchWithTimeout(`${BASE_URL}/push-token/test`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
       });
       const result = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(result.detail || '雲端後端尚未送出測試通知，請確認已重新部署。');
-      }
-      if (!result.ok) {
-        const reason = Array.isArray(result.errors) ? result.errors.join('\n') : 'Expo 尚未接受這封通知。';
-        Alert.alert('通知送出失敗', reason);
-        return;
-      }
-      Alert.alert('測試通知已送出', '請查看手機通知中心。若沒有出現，請確認你使用的是 EAS 安裝版且已允許通知。');
-    } catch (e: any) {
-      Alert.alert('測試失敗', e?.message || '請確認網路與雲端後端狀態。');
-    } finally {
-      setTestingNotification(false);
-    }
+      if (!res.ok || !result.ok) throw new Error(typeof result.detail === 'string' ? result.detail : (result.errors?.join('\n') || '雲端通知尚未送出，請稍後再試。'));
+      Alert.alert('雲端通知已送出', '請查看手機橫幅或通知中心。');
+    } catch (error: any) {
+      Alert.alert(kind === 'local' ? '手機通知尚未送出' : '雲端通知尚未送出', error?.message || '請稍後再試。', [
+        { text: '關閉', style: 'cancel' }, { text: '開啟系統設定', onPress: openSystemSettings },
+      ]);
+      void refreshNotificationStatus();
+    } finally { testingNotificationRef.current = false; setTestingNotification(null); }
   };
 
   const chooseAvatar = async (key: string) => { setAvatar(key); setAvatarModalVisible(false); };
@@ -2288,7 +2295,7 @@ function ProfileScreen({ navigation }: any) {
     setPopups(prev => prev.slice(1));
     try {
       await fetch(`${BASE_URL}/achievements/read`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ ids: [activePopup.id] }) });
-    } catch (e) { console.error(e); }
+    } catch (e) { logBackgroundRequestFailure('profile-popup-read', e); }
   };
 
   return (
@@ -2377,66 +2384,68 @@ function ProfileScreen({ navigation }: any) {
 
       </ScrollView>
 
-      <Modal visible={settingsOpen} transparent animationType="fade" onRequestClose={() => setSettingsOpen(false)}>
-        <View style={s.settingModalOverlay}>
-          <View style={s.optionCard}>
-            <Text style={s.noticeTitle}>小島設定</Text>
-            <TouchableOpacity style={s.settingListRow} onPress={() => openSettingEditor('time')} activeOpacity={0.85}>
-              <View style={{ flex: 1 }}>
-                <Text style={s.settingListTitle}>整理時間</Text>
-                <Text style={s.settingListSub}>每天 {settings.generate_time} 自動整理當日日記</Text>
-              </View>
+      <DismissibleModal visible={settingsOpen || !!settingEditor} onClose={() => { setSettingEditor(null); setSettingsOpen(false); }} overlayStyle={settingEditor ? s.settingEditorOverlay : s.settingModalOverlay}>
+        {!settingEditor ? <View style={[s.optionCard, { maxHeight: SH * 0.8 }]}>
+          <Text style={s.noticeTitle}>小島設定</Text>
+          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <TouchableOpacity style={s.settingListRow} onPress={() => openSettingEditor('time')}>
+              <View style={{ flex: 1 }}><Text style={s.settingListTitle}>整理時間</Text><Text style={s.settingListSub}>每天到此時間後，開啟 App 整理當日日記</Text></View>
               <Text style={s.settingListValue}>{settings.generate_time} ›</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={s.settingListRow} onPress={() => openSettingEditor('window')} activeOpacity={0.85}>
-              <View style={{ flex: 1 }}>
-                <Text style={s.settingListTitle}>修改期限</Text>
-                <Text style={s.settingListSub}>產生後 {settings.edit_window_minutes} 分鐘內可修改</Text>
-              </View>
-              <Text style={s.settingListValue}>{settings.edit_window_minutes} 分鐘 ›</Text>
+            <TouchableOpacity style={s.settingListRow} onPress={() => openSettingEditor('confirmation')}>
+              <View style={{ flex: 1 }}><Text style={s.settingListTitle}>確認截止時間</Text><Text style={s.settingListSub}>{settings.confirmation_time <= settings.generate_time ? '隔日' : '當日'} {settings.confirmation_time} 前可確認草稿</Text></View>
+              <Text style={s.settingListValue}>{settings.confirmation_time} ›</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={s.settingListRow} onPress={sendTestPhoneNotification} activeOpacity={0.85} disabled={testingNotification}>
-              <View style={{ flex: 1 }}>
-                <Text style={s.settingListTitle}>手機通知</Text>
-                <Text style={s.settingListSub}>接收小島精靈的整理完成與心情提醒</Text>
-              </View>
-              {testingNotification
-                ? <ActivityIndicator color={C.accent} />
-                : <Text style={s.settingListValue}>傳送測試 ›</Text>}
+            <View style={s.settingListRow}>
+              <View style={{ flex: 1 }}><Text style={s.settingListTitle}>逾時自動定稿</Text><Text style={s.settingListSub}>開啟後，已整理的草稿超過截止時間會自動定稿</Text></View>
+              <Switch accessibilityLabel="逾時自動定稿" value={settings.allow_auto_finalize} disabled={savingSettings} trackColor={{ true: C.accent }} onValueChange={value => { selectionFeedback(); void saveSettings({ allow_auto_finalize: value }); }} />
+            </View>
+            <TouchableOpacity style={s.settingListRow} onPress={() => openSettingEditor('timezone')}>
+              <View style={{ flex: 1 }}><Text style={s.settingListTitle}>日記時區</Text><Text style={s.settingListSub}>用來判斷日期、整理與截止時間</Text></View>
+              <Text style={[s.settingListValue, { maxWidth: '48%' }]}>{settings.timezone} ›</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={s.avatarModalCancel} onPress={() => setSettingsOpen(false)} activeOpacity={0.85}>
-              <Text style={s.avatarModalCancelText}>完成</Text>
+            <View style={s.settingListRow}>
+              <View style={{ flex: 1 }}><Text style={s.settingListTitle}>觸覺回饋</Text><Text style={s.settingListSub}>按下按鈕與切換選項時輕輕震動</Text></View>
+              <Switch accessibilityLabel="觸覺回饋" value={feedbackPreferences.haptics} trackColor={{ true: C.accent }} onValueChange={value => { feedbackPreferences.update({ haptics: value }); if (value) selectionFeedback(); }} />
+            </View>
+            <View style={s.settingListRow}>
+              <View style={{ flex: 1 }}><Text style={s.settingListTitle}>互動動畫</Text><Text style={s.settingListSub}>{feedbackPreferences.reduceMotion ? '手機已開啟減少動態效果' : '按鈕縮放與彈窗轉場'}</Text></View>
+              <Switch accessibilityLabel="互動動畫" value={feedbackPreferences.animations} trackColor={{ true: C.accent }} onValueChange={value => { feedbackPreferences.update({ animations: value }); selectionFeedback(); }} />
+            </View>
+            <TouchableOpacity style={s.settingListRow} onPress={() => { void sendTestPhoneNotification('local'); }} disabled={!!testingNotification}>
+              <View style={{ flex: 1 }}><Text style={s.settingListTitle}>手機通知</Text><Text style={s.settingListSub}>{phoneNotificationStatus}</Text></View>
+              {testingNotification === 'local' ? <ActivityIndicator color={C.accent} /> : <Text style={s.settingListValue}>傳送測試 ›</Text>}
             </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-      <Modal visible={!!settingEditor} transparent animationType="slide" onRequestClose={() => setSettingEditor(null)}>
-        <View style={s.settingEditorOverlay}>
+            <TouchableOpacity style={s.settingListRow} onPress={openSystemSettings}>
+              <View style={{ flex: 1 }}><Text style={s.settingListTitle}>系統通知設定</Text><Text style={s.settingListSub}>調整通知橫幅、聲音與允許權限</Text></View>
+              <Text style={s.settingListValue}>開啟 ›</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.settingListRow} onPress={() => { void sendTestPhoneNotification('remote'); }} disabled={!!testingNotification}>
+              <View style={{ flex: 1 }}><Text style={s.settingListTitle}>雲端提醒連線</Text><Text style={s.settingListSub}>檢查整理完成與心情提醒是否能送達手機</Text></View>
+              {testingNotification === 'remote' ? <ActivityIndicator color={C.accent} /> : <Text style={s.settingListValue}>測試連線 ›</Text>}
+            </TouchableOpacity>
+          </ScrollView>
+          <TouchableOpacity style={s.avatarModalCancel} onPress={() => setSettingsOpen(false)}><Text style={s.avatarModalCancelText}>完成</Text></TouchableOpacity>
+        </View> : <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={s.settingEditorSheet}>
-            <Text style={s.settingEditorTitle}>{settingEditor === 'time' ? '整理時間' : '修改期限'}</Text>
+            <Text style={s.settingEditorTitle}>{settingEditor === 'time' ? '整理時間' : settingEditor === 'timezone' ? '日記時區' : '確認截止時間'}</Text>
             <Text style={s.settingEditorDesc}>
-              {settingEditor === 'time'
-                ? '選擇小島精靈每天整理小日記的時間。到時間後會自動產生統整日記。'
-                : '選擇統整日記產生後還能修改多久。時間過後會自動定稿並分析。'}
+              {settingEditor === 'time' ? '每天到這個時間後，開啟 App 由小島精靈整理。'
+                : settingEditor === 'timezone' ? '日記依此時區分日，例如 Asia/Taipei。既有紀錄會保留。'
+                : '早於或等於整理時間時，截止時間會順延到隔日。'}
             </Text>
-            {settingEditor === 'time' ? (
-              <WheelSelector options={['19:00','20:00','21:00','22:00','23:00','23:59']} value={draftGenerateTime} onChange={setDraftGenerateTime} />
-            ) : (
-              <WheelSelector options={['15','30','45','60','90','120']} value={draftWindow} onChange={setDraftWindow} suffix=" 分鐘" />
-            )}
+            {settingEditor === 'timezone' ? <TextInput accessibilityLabel="日記時區" value={draftTimezone} onChangeText={setDraftTimezone} autoCapitalize="none" autoCorrect={false} style={[s.personalInput, { marginVertical: 16 }]} placeholder="Asia/Taipei" />
+              : <WheelSelector options={Array.from(new Set([...Array.from({ length: 48 }, (_, index) => `${String(Math.floor(index / 2)).padStart(2, '0')}:${index % 2 ? '30' : '00'}`), '23:59', settings.generate_time, settings.confirmation_time])).sort()} value={settingEditor === 'time' ? draftGenerateTime : draftConfirmationTime} onChange={settingEditor === 'time' ? setDraftGenerateTime : setDraftConfirmationTime} />}
             <View style={s.settingEditorActions}>
-              <TouchableOpacity style={s.settingEditorCancel} onPress={() => setSettingEditor(null)} activeOpacity={0.85}>
-                <Text style={s.settingEditorCancelText}>取消</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={s.settingEditorSave} onPress={saveSettingEditor} activeOpacity={0.85}>
-                <Text style={s.settingEditorSaveText}>儲存</Text>
+              <TouchableOpacity style={s.settingEditorCancel} onPress={() => setSettingEditor(null)}><Text style={s.settingEditorCancelText}>取消</Text></TouchableOpacity>
+              <TouchableOpacity style={s.settingEditorSave} onPress={saveSettingEditor} disabled={savingSettings}>
+                {savingSettings ? <ActivityIndicator color="white" /> : <Text style={s.settingEditorSaveText}>儲存</Text>}
               </TouchableOpacity>
             </View>
           </View>
-        </View>
-      </Modal>
-      <Modal visible={avatarModalVisible} transparent animationType="fade" onRequestClose={() => setAvatarModalVisible(false)}>
-        <View style={s.avatarModalOverlay}>
+        </KeyboardAvoidingView>}
+      </DismissibleModal>
+      <DismissibleModal visible={avatarModalVisible} animationType="fade" onClose={() => setAvatarModalVisible(false)} overlayStyle={s.avatarModalOverlay}>
           <View style={s.avatarModalCard}>
             <Text style={s.avatarModalTitle}>選擇頭像</Text>
             <Text style={s.avatarModalSubtitle}>選一個代表你的島民頭像</Text>
@@ -2452,8 +2461,7 @@ function ProfileScreen({ navigation }: any) {
               <Text style={s.avatarModalCancelText}>取消</Text>
             </TouchableOpacity>
           </View>
-        </View>
-      </Modal>
+      </DismissibleModal>
       {activePopup && <AchievementPopup popup={activePopup} onClose={dismissPopup} />}
     </View>
   );
@@ -2480,8 +2488,7 @@ function PhoneBindingModal({ visible, value, onClose, onSave, saving }: any) {
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={s.personalModalOverlay}>
+    <DismissibleModal visible={visible} animationType="fade" onClose={onClose} overlayStyle={s.personalModalOverlay}>
         <View style={s.personalModalCard}>
           <Text style={s.personalModalTitle}>綁定手機</Text>
           <Text style={s.personalInputLabel}>請輸入手機號碼</Text>
@@ -2502,8 +2509,7 @@ function PhoneBindingModal({ visible, value, onClose, onSave, saving }: any) {
             </TouchableOpacity>
           </View>
         </View>
-      </View>
-    </Modal>
+      </DismissibleModal>
   );
 }
 
@@ -2538,8 +2544,7 @@ function BirthdayPickerModal({ visible, value, onClose, onSave, saving }: any) {
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={s.personalModalOverlay}>
+    <DismissibleModal visible={visible} animationType="fade" onClose={onClose} overlayStyle={s.personalModalOverlay}>
         <View style={s.calendarModalCard}>
           <Text style={s.personalModalTitle}>出生年月日</Text>
           {selectingYear ? (
@@ -2582,8 +2587,7 @@ function BirthdayPickerModal({ visible, value, onClose, onSave, saving }: any) {
             </TouchableOpacity>
           </View>
         </View>
-      </View>
-    </Modal>
+      </DismissibleModal>
   );
 }
 
@@ -2890,14 +2894,14 @@ function FavoritesScreen({ navigation }: any) {
   const load = async () => {
       try {
         setLoading(true);
-        const res = await fetch(`${BASE_URL}/favorites`, { headers: { Authorization: `Bearer ${token}` } });
+        const res = await fetchWithWakeRetry(`${BASE_URL}/favorites`, { headers: { Authorization: `Bearer ${token}` } });
         const data = await res.json();
         const rows = (Array.isArray(data) ? data : [])
           .map((item: any) => item.analysis ? toTreeRecord(item.analysis) : toTreeRecord(item))
           .filter((item: TreeRecord) => item.date)
           .sort((a: TreeRecord, b: TreeRecord) => b.date.localeCompare(a.date));
         setFavorites(rows);
-      } catch (e) { console.error(e); } finally { setLoading(false); }
+      } catch (e) { logBackgroundRequestFailure('favorites-list', e); } finally { setLoading(false); }
   };
 
   useEffect(() => {
@@ -2939,7 +2943,7 @@ function FavoritesScreen({ navigation }: any) {
 // ─────────────────────────────────────────────────────────
 function MainTabs() {
   return (
-    <Tab.Navigator screenOptions={{ tabBarActiveTintColor: C.accent, tabBarInactiveTintColor: C.muted, tabBarStyle: { backgroundColor: 'rgba(250,246,240,0.46)', borderTopWidth: 0, borderTopColor: C.line, height: 70, borderTopLeftRadius: 28, borderTopRightRadius: 28, position: 'absolute' }, tabBarLabelStyle: { fontFamily: FONT_REG, fontSize: 12 }, headerShown: false }}>
+    <Tab.Navigator screenListeners={{ tabPress: () => selectionFeedback() }} screenOptions={{ tabBarActiveTintColor: C.accent, tabBarInactiveTintColor: C.muted, tabBarStyle: { backgroundColor: 'rgba(250,246,240,0.46)', borderTopWidth: 0, borderTopColor: C.line, height: 70, borderTopLeftRadius: 28, borderTopRightRadius: 28, position: 'absolute' }, tabBarLabelStyle: { fontFamily: FONT_REG, fontSize: 12 }, headerShown: false }}>
       <Tab.Screen name="HomeTab" component={HomeScreen} options={{ tabBarLabel: '首頁', tabBarIcon: () => <Image source={require('./assets/Homepage_icon.png')} style={{ width: 50, height: 50 }} resizeMode="contain" /> }} />
       <Tab.Screen name="TrendTab" component={CalendarScreen} options={{ tabBarLabel: '趨勢', tabBarIcon: () => <Image source={require('./assets/calendar.png')} style={{ width: 50, height: 50 }} resizeMode="contain" /> }} />
       <Tab.Screen name="ProfileTab" component={ProfileScreen} options={{ tabBarLabel: '我的', tabBarIcon: () => <Image source={require('./assets/personal.png')} style={{ width: 50, height: 50 }} resizeMode="contain" /> }} />
@@ -2969,6 +2973,15 @@ function RootNavigator() {
 
 type PushRegistrationResult = { ok: boolean; message: string; pushToken?: string };
 
+async function withTimeout<T>(operation: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([operation, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('連線逾時，請確認網路後重試。')), milliseconds);
+    })]);
+  } finally { clearTimeout(timer!); }
+}
+
 async function registerForPushNotifications(authToken: string): Promise<PushRegistrationResult> {
   if (!authToken || Platform.OS === 'web') {
     return { ok: false, message: '此裝置不支援手機推播。' };
@@ -2978,35 +2991,15 @@ async function registerForPushNotifications(authToken: string): Promise<PushRegi
     return { ok: false, message: '手機推播必須在實體手機上測試。' };
   }
   try {
-    if (Platform.OS === 'android') {
-      await Notifications.setNotificationChannelAsync('default', {
-        name: '小島精靈通知',
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 250, 250, 250],
-        lightColor: '#7A9E6A',
-      });
-    }
-
-    const current = await Notifications.getPermissionsAsync();
-    let status = current.status;
-    if (status !== 'granted') {
-      const requested = await Notifications.requestPermissionsAsync();
-      status = requested.status;
-    }
-    if (status !== 'granted') {
-      console.log('[push] notification permission not granted');
-      return { ok: false, message: '請到 iPhone 的「設定 > 通知 > Emotional Island」允許通知。' };
-    }
+    await ensureNotificationPermission();
 
     const constantsAny: any = Constants;
     const projectId =
       constantsAny?.easConfig?.projectId ||
       constantsAny?.expoConfig?.extra?.eas?.projectId ||
       constantsAny?.manifest2?.extra?.eas?.projectId;
-    const tokenResult = await Notifications.getExpoPushTokenAsync(
-      projectId ? { projectId } : undefined
-    );
-    const uploadRes = await fetch(`${BASE_URL}/push-token`, {
+    const tokenResult = await withTimeout(Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined), 12000);
+    const uploadRes = await fetchWithTimeout(`${BASE_URL}/push-token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
       body: JSON.stringify({
@@ -3022,7 +3015,7 @@ async function registerForPushNotifications(authToken: string): Promise<PushRegi
     return { ok: true, message: '手機通知已連結。', pushToken: tokenResult.data };
   } catch (e) {
     console.log('[push] failed to register push token', e);
-    return { ok: false, message: (e as any)?.message || '取得手機推播識別碼失敗。請使用 EAS 安裝版重試。' };
+    return { ok: false, message: /aps-environment|entitlement/i.test(String((e as any)?.message)) ? '這個安裝版本尚未開啟雲端提醒。手機通知測試仍可使用；雲端提醒需要更新安裝版本後再試。' : ((e as any)?.message || '手機通知暫時無法連結，請稍後重試。') };
   }
 }
 
@@ -3030,6 +3023,10 @@ async function registerForPushNotifications(authToken: string): Promise<PushRegi
 // App Entry
 // ─────────────────────────────────────────────────────────
 export default function App() {
+  return <InteractionFeedbackProvider><NoticeProvider><AppContent /></NoticeProvider></InteractionFeedbackProvider>;
+}
+
+function AppContent() {
   const [fontsLoaded] = useFonts({
     NotoSerifTC_400Regular,
     NotoSerifTC_500Medium,
@@ -3040,7 +3037,8 @@ export default function App() {
   const [username, setUsernameState] = useState('');
   const [avatar, setAvatarState] = useState('boy');
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot'>('login');
-  const [entry, setEntry] = useState<'welcome' | 'auth' | 'onboarding' | 'main'>('welcome');
+  const [afterModelSetup, setAfterModelSetup] = useState<'onboarding' | 'main'>('main');
+  const [entry, setEntry] = useState<'welcome' | 'auth' | 'modelSetup' | 'onboarding' | 'main'>('welcome');
 
   useEffect(() => {
     const loadAvatar = async () => {
@@ -3089,7 +3087,9 @@ export default function App() {
       await AsyncStorage.setItem(`userAvatar:${u}`, avatarKey);
     }
     const localSeen = await AsyncStorage.getItem(`onboardingSeen:${u}`);
-    setEntry(firstRegister || (!onboardingSeen && localSeen !== 'true') ? 'onboarding' : 'main');
+    const destination = firstRegister || (!onboardingSeen && localSeen !== 'true') ? 'onboarding' : 'main';
+    setAfterModelSetup(destination);
+    setEntry('modelSetup');
   };
 
   if (!fontsLoaded) {
@@ -3107,6 +3107,10 @@ export default function App() {
 
   if (!token) {
     return <LoginScreen mode={authMode} setMode={setAuthMode} onLoggedIn={handleLoggedIn} />;
+  }
+
+  if (entry === 'modelSetup') {
+    return <PhoneModelPreparationScreen onReady={() => setEntry(afterModelSetup)} />;
   }
 
   if (entry === 'onboarding') {

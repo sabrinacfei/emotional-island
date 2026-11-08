@@ -1,0 +1,32 @@
+{
+  "schema": "modernbert-phone-v1",
+  "model": "modernbert-lora-coreml-fp16-v1",
+  "runtime": "coreml",
+  "model_sha256": "4e1c697eb572327ea80d8e70a74172dcfe94807a31ecbb72eb37c5e91a0bfbae",
+  "tokenizer_sha256": "fe530b837c912faf33acd6b1a15a46234259519acb967ead693c692cc2e93647",
+  "labels": [
+    "anger",
+    "anticipation",
+    "disgust",
+    "fear",
+    "joy",
+    "sadness",
+    "surprise",
+    "trust"
+  ],
+  "max_input_tokens": 128,
+  "overlap_tokens": 32,
+  "pad_token_id": 50283,
+  "cls_token_id": 50281,
+  "sep_token_id": 50282,
+  "input_dtype": "int32",
+  "output": "probabilities",
+  "base_revision": "f738a818a4384aebf1ccdb41da4145457d5f40b0",
+  "compiled_files": {
+    "analytics/coremldata.bin": "43a69e5cee802131dd9d25db203e8b904219f2737201e0db31b89336d0af6ecd",
+    "coremldata.bin": "e3841743fa78135bdb2860b4dcab8854dbefd58f3f0fefb7f978ed0a6022e1df",
+    "metadata.json": "f172b14d8a24c7a8e32dbb6f3ab9037d1be7fbbfc354af59c22b836214bfdd3f",
+    "model.mil": "b3fd39771cb2bc3356b7ef07b3f42890a1539171f92d86b9651c72eff4186b63",
+    "weights/weight.bin": "4e1c697eb572327ea80d8e70a74172dcfe94807a31ecbb72eb37c5e91a0bfbae"
+  }
+}

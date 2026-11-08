@@ -4,7 +4,7 @@
     "slug": "emotional-island",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/mood_island_icon_white_bg_removed.png",
+    "icon": "./assets/mood_island_icon_ios_1024.png",
     "userInterfaceStyle": "light",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -12,7 +12,7 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "icon": "./assets/mood_island_icon_white_bg_removed.png",
+      "icon": "./assets/mood_island_icon_ios_1024.png",
       "supportsTablet": true,
       "bundleIdentifier": "com.sabrinacfei.emotionalisland"
     },
@@ -29,16 +29,31 @@
     },
     "extra": {
       "apiUrl": "https://emotional-island-api.onrender.com",
-      "router": {},
       "eas": {
         "projectId": "af485008-e31c-4510-bd53-b3db90bc7088"
       }
     },
     "plugins": [
-      "expo-router",
       "expo-notifications",
       "expo-secure-store",
-      "expo-video"
+      "expo-video",
+      "expo-font",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "15.1"
+          }
+        }
+      ],
+      [
+        "llama.rn",
+        {
+          "enableEntitlements": false,
+          "forceCxx20": true,
+          "enableOpenCLAndHexagon": false
+        }
+      ]
     ]
   }
 }
