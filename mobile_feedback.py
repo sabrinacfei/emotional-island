@@ -22,6 +22,10 @@ class Input(BaseModel):
     date_label: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
+class PhoneClassificationInput(Input):
+    classification: dict
+
+
 class NativeGeneration(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
     execution: Literal["on-device"]
@@ -72,6 +76,29 @@ def digest(content: str) -> str:
 
 def router(current_user, save_entry, secret: str, classifier=None, require_final=None) -> APIRouter:
     api = APIRouter(prefix="/mobile", tags=["Phone SLM"])
+
+    @api.post("/emotions/on-device")
+    async def register_phone(data: PhoneClassificationInput, uid=Depends(current_user)):
+        if not data.content.strip() or not data.date_label:
+            raise HTTPException(422, "正式分類需要每日日記日期與定稿內容。")
+        revision = await require_final(uid, data.date_label, data.content) if require_final else digest(data.content)
+        floor = detect_safety_risk(data.content)
+        if floor == 'high':
+            return {"backend":"modernbert","classification_available":False,"scores":None,"receipt_token":None,"risk_floor":"high"}
+        try:
+            from phone_classifier import validate_phone_classification
+            result,trace=validate_phone_classification(data.classification,digest(data.content))
+        except (ValueError,KeyError,TypeError,FileNotFoundError):
+            raise HTTPException(422, "手機分類紀錄與定稿內容或模型版本不符。") from None
+        analysis={k:result[k] for k in ("probabilities","top_3","labels","token_count","chunk_count","chunks","aggregation","truncated")}
+        now=datetime.now(timezone.utc)
+        receipt=jwt.encode({"sub":str(uid),"aud":"phone-emotions-v1","exp":now+timedelta(hours=24),
+            "iat":now,"date_label":data.date_label,"final_revision":revision,"input_sha256":digest(data.content),
+            "scores":result['scores'],"risk_floor":floor,"classifier":"modernbert-lora","analysis":analysis,
+            "classifier_execution":"on-device","classifier_provenance":"client_reported_native_classifier",
+            "classifier_trace":trace},secret,algorithm='HS256')
+        return {"backend":"modernbert","classification_available":True,"scores":result['scores'],"analysis":analysis,
+                "receipt_token":receipt,"risk_floor":floor,"classifier_execution":"on-device","classifier_trace":trace}
     @api.post("/emotions")
     async def classify(data: Input, uid=Depends(current_user)):
         if not data.content.strip() or not data.date_label:
@@ -111,6 +138,9 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
         floor = detect_safety_risk(data.content)
         scores = None
         analysis = None
+        classifier_execution = None
+        classifier_trace = None
+        classifier_provenance = None
         if data.kind == "fragment" and data.receipt_token:
             raise HTTPException(422, "小日記不接受正式分類結果。")
         if data.kind == "daily" and require_final:
@@ -124,6 +154,9 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
                     raise ValueError("Classifier receipt does not match diary/user")
                 scores = Scores.model_validate(receipt["scores"]).model_dump()
                 analysis = receipt["analysis"]
+                classifier_execution = receipt.get("classifier_execution", "cloud")
+                classifier_trace = receipt.get("classifier_trace")
+                classifier_provenance = receipt.get("classifier_provenance", "server_executed_classifier")
                 if sum(scores.values()) != 100:
                     raise ValueError("Invalid classifier distribution")
                 floor = decide(floor, receipt["risk_floor"]).risk_level
@@ -156,7 +189,9 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
                   "response_mode": route.response_mode, "safety_check_status": "screened",
                   "safety_decision": route.model_dump(), "inference_source": "phone-qwen3.5-4b" if data.support.generation else "fixed-safety",
                   "inference_provenance": "client_reported_native_trace" if data.support.generation else "fixed_template",
-                  "classifier_source": "modernbert-lora" if scores else None, "classifier_analysis": analysis}
+                  "classifier_source": "modernbert-lora" if scores else None, "classifier_analysis": analysis,
+                  "classifier_execution":classifier_execution,"classifier_trace":classifier_trace,
+                  "classifier_provenance":classifier_provenance}
         return await save_entry(uid, data, result)
 
     return api
