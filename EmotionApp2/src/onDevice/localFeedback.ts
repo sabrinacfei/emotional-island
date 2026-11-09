@@ -61,7 +61,11 @@ export function parseSupport(input: unknown, assessment: ContextAssessment): Sup
   if (!v || Object.keys(v).sort().join(',') !== 'blessing,comfort,suggestions' || !Array.isArray(v.suggestions) || v.suggestions.length > 2) throw new Error('Invalid support');
   const suggestions = v.suggestions.map(s => text(s, 160));
   if (assessment.support_style === 'listening' && suggestions.length) throw new Error('Suggestions conflict with listening preference');
-  return { comfort: text(v.comfort, 700), suggestions, blessing: typeof v.blessing === 'string' && !v.blessing.trim() ? '' : text(v.blessing, 160) };
+  const comfort = text(v.comfort, 700);
+  const blessing = typeof v.blessing === 'string' && !v.blessing.trim() ? '' : text(v.blessing, 160);
+  const followUp = /[?？]|(?:嗎|吗|好不好|你覺得呢)(?=[。！!\s]|$)|(?:告訴我|跟我說|和我說)(?:更多|一點)|(?:跟|和)我(?:再|多)?聊聊|請回覆|等你回覆|歡迎繼續分享/u;
+  if ([comfort, ...suggestions, blessing].some(part => followUp.test(part))) throw new Error('Support must be a complete one-way response');
+  return { comfort, suggestions, blessing };
 }
 export function fixedSafety(safety: Decision): Support {
   return safety.risk_level === 'high' ? {

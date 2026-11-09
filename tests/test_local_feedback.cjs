@@ -125,6 +125,15 @@ test('a listening preference does not receive forced suggestions or a fabricated
   const r = await runLocalFeedback(diary, h.classify, h.slm);
   assert.equal(r.status, 'unavailable'); assert.equal(r.response_mode, 'SAFE_MODE');
 });
+test('phone feedback rejects questions and requests for a next turn', async () => {
+  for (const ending of ['你現在還好嗎？', '如果想聊，歡迎繼續分享。']) {
+    const h = setup({ support: { comfort: `這份失落有它的分量。${ending}`, suggestions: [], blessing: '' } });
+    const result = await runLocalFeedback(diary, h.classify, h.slm);
+    assert.equal(result.status, 'unavailable');
+    assert.equal(result.failure_stage, 'support_validation');
+    assert.ok(!result.comfort.includes(ending));
+  }
+});
 
 test('fragment support runs native assessment and response without any cloud scores', async () => {
   const h = setup(); const r = await runImmediateSupport(diary, h.slm);
