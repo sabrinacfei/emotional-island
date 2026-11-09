@@ -10,7 +10,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from slm_schemas import Scores
+from slm_schemas import Emotion, Scores
 from safety_policy import decide
 from safety_rules import detect_safety_risk
 from modernbert_chunking import LABELS
@@ -61,11 +61,47 @@ class Cause(BaseModel):
     topic: str = Field(min_length=1, max_length=40)
     explanation: str = Field(min_length=1, max_length=180)
     evidence: str = Field(min_length=2, max_length=160)
-    emotions: list[Literal["Anger", "Anticipation", "Disgust", "Fear", "Joy", "Sadness", "Surprise", "Trust"]] = Field(min_length=1, max_length=3)
+    emotions: list[Emotion] = Field(min_length=1, max_length=3)
 
 
-class PhoneSupport(BaseModel):
+class EmotionSource(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    emotion: Emotion
+    explanation: str = Field(min_length=1, max_length=180)
+    evidence: str = Field(min_length=2, max_length=160)
+
+
+class SourceDetails(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    causes: list[Cause] = Field(default_factory=list, max_length=3)
+    emotion_sources: list[EmotionSource] | None = Field(default=None, max_length=8)
+
+    def verify_evidence(self, content: str):
+        items = self.emotion_sources or []
+        if len({item.emotion for item in items}) != len(items) or any(
+            not item.explanation.strip() or not item.evidence.strip() or item.evidence not in content
+            for item in [*self.causes, *items]
+        ):
+            raise HTTPException(422, "情緒來源缺少可核對的原文依據。")
+
+
+def daily_source_fields(causes: list[dict], emotion_sources: list[dict] | None) -> dict:
+    reasons: dict[str, list[str]] = {}
+    for cause in causes:
+        for emotion in cause["emotions"]:
+            reasons.setdefault(emotion, []).append(cause["explanation"])
+    for source in emotion_sources or []:
+        reasons.setdefault(source["emotion"], []).insert(0, source["explanation"])
+    return {
+        "causes": causes,
+        "emotion_sources": emotion_sources,
+        "emotion_reasons": {key: "、".join(dict.fromkeys(items)) for key, items in reasons.items()},
+        **{kind + "_tags": [{"tag": c["topic"], "reason": c["explanation"], "evidence": c["evidence"]}
+                            for c in causes if c["type"] == kind] for kind in ("stressor", "buffer", "joy")},
+    }
+
+
+class PhoneSupport(SourceDetails):
     status: Literal["completed", "local_safety"]
     comfort: str = Field(min_length=1, max_length=700)
     suggestions: list[str] = Field(max_length=2)
@@ -75,7 +111,6 @@ class PhoneSupport(BaseModel):
     safety_action: Literal["none", "encourage_support", "urgent_help"]
     context: dict[str, str] | None
     generation: NativeGeneration | None
-    causes: list[Cause] = Field(default_factory=list, max_length=3)
 
 
 class Commit(Input):
@@ -192,10 +227,9 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
         if route.risk_level != "high" and (not data.support.context or set(data.support.context) != context_keys
                 or any(not v.strip() or len(v) > 180 for v in data.support.context.values())):
             raise HTTPException(422, "語境資料不完整。")
-        if data.kind == "fragment" and data.support.causes:
-            raise HTTPException(422, "小日記不建立正式情緒成因。")
-        if any(c.evidence not in data.content for c in data.support.causes):
-            raise HTTPException(422, "情緒成因缺少原文依據。")
+        if (data.kind == "fragment" or route.risk_level == "high") and (data.support.causes or data.support.emotion_sources):
+            raise HTTPException(422, "此紀錄不接受正式情緒成因。")
+        data.support.verify_evidence(data.content)
         support = data.support.model_dump()
         if route.risk_level == "high":
             # Fixed server copy as well: do not persist arbitrary high-risk free generation.

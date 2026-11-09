@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ConfigDict
 from pymongo import ReturnDocument
 from daily_workflow import DailyWorkflow
+from mobile_feedback import EmotionSource, SourceDetails, daily_source_fields
 from slm_schemas import Scores
 
 
@@ -26,6 +27,11 @@ class Draft(BaseModel):
 class Final(BaseModel):
     model_config = ConfigDict(extra="forbid")
     content: str = Field(min_length=1, max_length=12000)
+
+
+class SourceRefresh(SourceDetails):
+    content: str = Field(min_length=1, max_length=12000)
+    emotion_sources: list[EmotionSource] = Field(max_length=8)
 
 
 def has_classification(row):
@@ -110,6 +116,29 @@ def router(db, current_user, serialize):
     async def confirm(day: str, data: Final, uid=Depends(current_user)):
         valid_day(day)
         return serialize(await workflow.confirm(uid, day, data.content))
+
+    @api.post("/daily/{day}/refresh-sources")
+    async def refresh_sources(day: str, data: SourceRefresh, uid=Depends(current_user)):
+        valid_day(day)
+        await workflow.require_final(uid, day, data.content)
+        data.verify_evidence(data.content)
+        diary = await db.daily_diaries.find_one({"userId": uid, "date_label": day, "workflow_status": "analyzed"})
+        if not diary or not diary.get("analysisId"):
+            raise HTTPException(409, "請先完成當日分析。")
+        query = {"_id": diary["analysisId"], "userId": uid, "date_label": day, "final_content": data.content,
+                 "processing_mode": "phone_slm_v1", "classification_available": True, "risk_level": {"$ne": "high"}}
+        record = await db.emotion_analyses.find_one(query)
+        if not record:
+            raise HTTPException(409, "此日記目前無法補充情緒來源。")
+        causes = [item.model_dump() for item in data.causes]
+        categories = {item["type"] for item in causes}
+        causes.extend(c for c in record.get("causes", [])
+                      if c["type"] not in categories and c.get("evidence") and c["evidence"] in data.content)
+        fields = daily_source_fields(causes, [item.model_dump() for item in data.emotion_sources])
+        updated = await db.emotion_analyses.find_one_and_update(query, {"$set": fields}, return_document=ReturnDocument.AFTER)
+        if not updated:
+            raise HTTPException(409, "當日分析已變更，請重新開啟。")
+        return serialize(updated)
 
     @api.get("/weekly/{start}")
     async def weekly(start: str, uid=Depends(current_user)):

@@ -14,7 +14,7 @@ function load(relative) {
   return m.exports;
 }
 global.__DEV__ = false;
-const { runLocalFeedback, runImmediateSupport } = load('localFeedback');
+const { runLocalFeedback, runImmediateSupport, parseDailySources } = load('localFeedback');
 const { selectDisplayContent } = load('qwen/policy');
 const { PHONE_MODELS } = load('qwen/config');
 const { trendPaths } = load('weekly');
@@ -151,6 +151,12 @@ test('fragment support runs native assessment and response without any cloud sco
   assert.equal('emotion_scores' in h.calls[0][1], false);
   assert.equal('emotion_probabilities' in h.calls[1][1], false);
   assert.deepEqual(r.causes, []);
+});
+test('an emotion can have its own grounded source without a corresponding event category', () => {
+  const source = { emotion: 'Sadness', evidence: '覺得有點委屈', explanation: '受到批評讓我感到委屈。' };
+  assert.deepEqual(parseDailySources({ causes: [], emotion_sources: [source] }, diary).emotion_sources, [source]);
+  assert.throws(() => parseDailySources({ causes: [], emotion_sources: [{ ...source, evidence: '考試失利' }] }, diary));
+  assert.throws(() => parseDailySources({ causes: [], emotion_sources: [source, source] }, diary));
 });
 test('verified empty thinking and assistant prefixes preserve valid JSON but never reasoning', () => {
   const json = '{"comfort":"我聽見了。"}';

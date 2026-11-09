@@ -10,6 +10,8 @@ export type PhoneClassifierReply = ClassifierReply & { classifier_trace?: Classi
 export type ContextAssessment = { risk_level: Risk; risk_evidence: string[]; context: Context; support_style: 'listening' | 'suggestions' | 'unspecified' };
 export type Support = { comfort: string; suggestions: string[]; blessing: string };
 export type EmotionCause = { type: 'stressor' | 'buffer' | 'joy'; topic: string; explanation: string; evidence: string; emotions: string[] };
+export type EmotionSource = { emotion: string; explanation: string; evidence: string };
+export type DailySources = { causes: EmotionCause[]; emotion_sources?: EmotionSource[] };
 export type GenerationTrace = { execution: 'on-device'; runtime: string; model: PhoneModelId; sha256: string;
   tokens_predicted: number; duration_ms: number; tokens_per_second: number | null; stopped_eos: boolean; raw_text: string };
 export type SLMRun = { output: unknown; trace: GenerationTrace };
@@ -22,12 +24,13 @@ export type LocalFeedback = Support & Decision & {
   classifier_analysis: ClassifierAnalysis | null;
   classifier_trace?: ClassifierTrace;
   causes?: EmotionCause[];
+  emotion_sources?: EmotionSource[];
   failure_stage?: 'classification' | 'assessment' | 'assessment_validation' | 'support' | 'support_validation' | 'causes' | 'causes_validation';
 };
 export interface PhoneSLM {
   assess(input: { diary: string; emotion_scores?: Scores; emotion_probabilities?: Scores; safety: Decision }): Promise<SLMRun>;
   respond(input: { diary: string; emotion_scores?: Scores; emotion_probabilities?: Scores; assessment: ContextAssessment; safety: Decision }): Promise<SLMRun>;
-  causes?(input: { diary: string; emotion_probabilities: Scores }): Promise<SLMRun>;
+  causes?(input: { diary: string; emotion_probabilities: Scores }): Promise<{ output: unknown }>;
 }
 
 export function parseCauses(input: unknown, diary: string): EmotionCause[] {
@@ -39,6 +42,22 @@ export function parseCauses(input: unknown, diary: string): EmotionCause[] {
       || typeof c.evidence !== 'string' || c.evidence.length < 2 || !diary.includes(c.evidence)) throw new Error('Unverifiable cause');
     return { ...c, topic: text(c.topic, 40), explanation: text(c.explanation, 180), evidence: text(c.evidence, 160) };
   });
+}
+
+export function parseDailySources(input: unknown, diary: string): DailySources {
+  const value = input as DailySources;
+  const causes = parseCauses({ causes: value?.causes }, diary);
+  if (value.emotion_sources === undefined) return { causes };
+  if (!Array.isArray(value.emotion_sources) || value.emotion_sources.length > EMOTIONS.length) throw new Error('Invalid emotion sources');
+  const seen = new Set<string>();
+  const emotion_sources = value.emotion_sources.map(source => {
+    const evidence = text(source?.evidence, 160);
+    if (!EMOTIONS.some(emotion => emotion === source.emotion)
+      || seen.has(source.emotion) || evidence.length < 2 || !diary.includes(evidence)) throw new Error('Unverifiable emotion source');
+    seen.add(source.emotion);
+    return { emotion: source.emotion, explanation: text(source.explanation, 180), evidence };
+  });
+  return { causes, emotion_sources };
 }
 
 const contextKeys = ['event_context', 'emotional_context', 'main_concern', 'coping_already_tried', 'support_preference'] as const;
@@ -129,15 +148,15 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
     const model = PHONE_MODELS[generation.model];
     if (!model || generation.sha256 !== model.sha256 || generation.execution !== 'on-device'
       || generation.tokens_predicted <= 0 || !generation.raw_text) throw new Error('Invalid native generation result');
-    let causes: EmotionCause[] = [];
+    let sources: DailySources = { causes: [] };
     if (!immediate && slm.causes && analysis) {
       stage = 'causes';
       progress('正在手機整理情緒成因');
       const found = await slm.causes({ diary, emotion_probabilities: analysis.probabilities });
       stage = 'causes_validation';
-      causes = parseCauses(found.output, diary);
+      sources = parseDailySources(found.output, diary);
     }
-    return { ...base(), ...support, causes, inference_source: model.inferenceSource, status: 'completed', safety_check_status: 'screened', context: assessment.context };
+    return { ...base(), ...support, ...sources, inference_source: model.inferenceSource, status: 'completed', safety_check_status: 'screened', context: assessment.context };
   } catch (error) {
     if (__DEV__) {
       console.error('[AI Analysis Failed]', { stage: 'local-feedback', errorType: error instanceof Error ? error.name : 'UnknownError' });

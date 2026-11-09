@@ -24,7 +24,7 @@ import { FeedbackTouchable as TouchableOpacity, InteractionFeedbackProvider, sel
 import { Alert, DismissibleModal, NoticeProvider } from './src/ui/Overlay';
 import { ensureNotificationPermission, notificationStatus, sendLocalTestNotification } from './src/notifications';
 import { fetchWithTimeout } from './src/network';
-import { phoneSLM, composePhoneDaily } from './src/onDevice/qwen/runtime';
+import { phoneSLM, composePhoneDaily, generateDailySources } from './src/onDevice/qwen/runtime';
 import { PHONE_MODEL } from './src/onDevice/qwen/storage';
 import { SafetyResources } from './src/onDevice/PhoneModelSetup';
 import { PhoneModelPreparationScreen } from './src/onDevice/PhoneModelPreparationScreen';
@@ -239,15 +239,19 @@ function getTopEmotions(scores: Record<string, number> = {}, limit = 3) {
 
 // 對齊 HTML getEmoSource：根據 EMO_SRC 取對應 tag 的說明
 function getEmoSource(raw: any, key: string, scoreVal: number): string {
-  const savedReason = raw?.emotion_reasons?.[key] || raw?.emotionReasons?.[key];
-  if (savedReason) return savedReason;
   if (!raw || scoreVal === 0) {
     return `這筆紀錄尚未產生${EC[key]?.l || key}的具體原因。`;
   }
+  const source = raw.emotion_sources?.find((item: any) => item.emotion === key);
+  if (source) return `${source.explanation}\n\n日記原文「${source.evidence}」`;
   if (Array.isArray(raw.causes)) {
-    const reasons = raw.causes.filter((cause: any) => cause.emotions?.includes(key)).map((cause: any) => cause.explanation);
-    return Array.from(new Set(reasons)).join('、') || `日記中沒有足夠線索說明${EC[key]?.l || key}的來源。`;
+    const reasons = raw.causes.filter((cause: any) => cause.emotions?.includes(key))
+      .map((cause: any) => cause.evidence ? `${cause.explanation}\n日記原文「${cause.evidence}」` : cause.explanation);
+    return Array.from(new Set(reasons)).join('\n\n') ||
+      `${scoreVal}% 是模型對這篇文字的分類比例。日記裡沒有足夠線索，把${EC[key]?.l || key}連到某個具體事件。`;
   }
+  const savedReason = raw.emotion_reasons?.[key] || raw.emotionReasons?.[key];
+  if (savedReason) return savedReason;
   const cats = EMO_SRC[key] || ['st'];
   const lines: string[] = [];
   cats.forEach(c => {
@@ -414,9 +418,10 @@ function recordMatchesMonth(record: TreeRecord, year: number, month: number) {
 
 function hasWeekAnalysis(records: TreeRecord[], year: number, month: number, week: number) {
   const { startDay, endDay } = getMonthWeekRange(year, month, week);
-  return records.some(r => recordMatchesMonth(r, year, month) && r.raw?.classification_available !== false
-    && EMO_KEYS.some(key => typeof r.scores?.[key] === 'number' && r.scores[key] > 0 && r.scores[key] <= 100)
-    && Number(r.date.slice(8, 10)) >= startDay && Number(r.date.slice(8, 10)) <= endDay);
+  const analyzed = new Set(records.filter(r => r.raw?.classification_available !== false
+    && EMO_KEYS.some(key => typeof r.scores?.[key] === 'number' && r.scores[key] > 0 && r.scores[key] <= 100)).map(r => r.date));
+  return endDay - startDay === 6 && Array.from({ length: 7 }, (_, index) => getDateKey(year, month, startDay + index))
+    .every(date => analyzed.has(date));
 }
 
 // ─── UI 元件 ───
@@ -1829,6 +1834,9 @@ function DailyDiaryViewScreen({ navigation, route }: any) {
 // DayAnalysisScreen（還原柱狀圖，完整對齊 HTML）
 // ─────────────────────────────────────────────────────────
 function DayAnalysisScreen({ navigation, route }: any) {
+  const { token } = useContext(AuthContext);
+  const [refreshingSources, setRefreshingSources] = useState(false);
+  const [sourceStatus, setSourceStatus] = useState('');
   const { date, record } = route.params || {};
   const rec: TreeRecord | null = record || null;
   const dominantMood = rec?.mood || 'Joy';
@@ -1836,6 +1844,24 @@ function DayAnalysisScreen({ navigation, route }: any) {
   const scores = norm(rec?.scores || {});
   const top = getTopEmotions(scores, 3);
   const dailyContent = rec?.raw?.final_content || rec?.raw?.daily_content || rec?.raw?.dailyContent;
+  const canRefreshSources = rec?.raw?.processing_mode === 'phone_slm_v1' && rec.raw.classification_available === true
+    && rec.raw.risk_level !== 'high' && dailyContent && !Array.isArray(rec.raw.emotion_sources);
+
+  const refreshSources = async () => {
+    if (!rec || !canRefreshSources || refreshingSources) return;
+    setRefreshingSources(true);
+    setSourceStatus('正在手機重新核對情緒來源…');
+    try {
+      const details = await generateDailySources(dailyContent, rec.scores || {});
+      const updated = await post(BASE_URL, `/mobile/daily/${rec.date}/refresh-sources`, token, { content: dailyContent, ...details });
+      navigation.setParams({ record: toTreeRecord(updated) });
+      setSourceStatus('已同步重新核對的情緒來源。');
+    } catch {
+      setSourceStatus('情緒來源尚未同步，可稍後重試。');
+    } finally {
+      setRefreshingSources(false);
+    }
+  };
 
   return (
     <ScreenBg source={require('./assets/Tree_of_the_Day.png')}>
@@ -1867,6 +1893,11 @@ function DayAnalysisScreen({ navigation, route }: any) {
         <View style={s.resultCard}>
           <Text style={[s.label, { marginBottom: 12 }]}>壓力來源、情緒緩衝、快樂來源</Text>
           <TagReasonSection raw={rec?.raw} />
+          {canRefreshSources && <TouchableOpacity testID="refresh-daily-sources" style={[s.primaryBtn, { marginTop: 16 }]}
+            disabled={refreshingSources} onPress={refreshSources}>
+            <Text style={s.primaryBtnText}>重新核對情緒來源</Text>
+          </TouchableOpacity>}
+          {!!sourceStatus && <Text testID="source-refresh-status" accessibilityLiveRegion="polite" style={[s.mini, { marginTop: 10 }]}>{sourceStatus}</Text>}
         </View>
         {!!dailyContent && <View style={s.resultCard}>
           <Text style={[s.label, { marginBottom: 12 }]}>當天完整日記</Text>
@@ -1886,7 +1917,7 @@ function WeeklyAnalysisScreen({ navigation, route }: any) {
   const year = route.params?.year || now.getFullYear();
   const month = route.params?.month || now.getMonth() + 1;
   const week = route.params?.week || 1;
-  const start = getDateKey(year, month, route.params?.startDay || getMonthWeekRange(year, month, week).startDay);
+  const start = getDateKey(year, month, getMonthWeekRange(year, month, week).startDay);
   const [review, setReview] = useState<WeekReview | null>(null);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(0);
@@ -1914,11 +1945,15 @@ function WeeklyAnalysisScreen({ navigation, route }: any) {
         <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>情緒走勢</Text>
         {!!error && <Text style={s.body}>{error}</Text>}
         {!review && !error && <ActivityIndicator color={C.accent} />}
-        {review && <>
+        {review && review.analyzed_days !== 7 && <View style={s.weekEmptyCard}>
+          <Text style={s.weekEmptyTitle}>第{week}週心情趨勢尚未完成</Text>
+          <Text style={s.weekEmptyText}>週一到週日都完成當日分析後，就會開放週狀態。{period} 已完成 {review.analyzed_days} / 7 天。</Text>
+        </View>}
+        {review?.analyzed_days === 7 && <>
           <Text style={[s.title, { fontSize: 22, marginTop: 28 }]}>第{week}週心情趨勢 🌱</Text>
           <Text style={[s.body, { color: C.sub, marginBottom: 12 }]}>{period}，拖動輔助線查看當天詳情</Text>
           <Text testID="weekly-status" style={[s.mini, { color: C.muted, marginBottom: 10 }]}>
-            {review.analyzed_days === 7 ? '綜合正負情緒計算每日心情指數' : `已有 ${review.analyzed_days} / 7 天正式分析，缺少的日期標示為無紀錄。`}
+            綜合正負情緒計算每日心情指數
           </Text>
           <View style={s.resultCard}>
             <EmotionLineChart days={days} selected={selected} onDayChange={setSelected} />

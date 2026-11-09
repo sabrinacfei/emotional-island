@@ -96,6 +96,15 @@ class WorkflowIntegration(unittest.TestCase):
   self.assertEqual(weekly['days'][0]['analysis']['scores'],history[0]['scores'])
   self.assertTrue(all(x['analysis'] is None for x in weekly['days'][1:]))
   self.assertEqual(weekly['recurring_factors'][0]['occurrences'][0]['evidence'],'報告受到批評')
+  refresh='/mobile/daily/'+self.day+'/refresh-sources'
+  source=dict(emotion='Sadness',explanation='被批評後感到委屈。',evidence='覺得委屈')
+  self.assertEqual(self.post(refresh,dict(content=RAW,emotion_sources=[{**source,'evidence':'沒有寫過'}])).status_code,422)
+  self.assertEqual(self.post(refresh,dict(content=RAW+'不同',emotion_sources=[source])).status_code,409)
+  updated=self.post(refresh,dict(content=RAW,emotion_sources=[source])).json()
+  self.assertEqual(updated['emotion_sources'],[source])
+  self.assertEqual(updated['stressor_tags'],history[0]['stressor_tags'])
+  self.assertEqual(updated['final_content'],history[0]['final_content'])
+  self.assertEqual(updated['scores'],history[0]['scores'])
  def test_closed_app_has_pending_aggregation_not_fake_generated_draft(self):
   self.fragment()
   for _ in range(2):

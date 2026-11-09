@@ -21,6 +21,8 @@ import urllib.request
 import urllib.error
 from selfhost_config import load_settings
 from slm_client import SelfHostedGenerationError
+from mobile_feedback import daily_source_fields, router as phone_router
+from mobile_workflow_api import has_classification, router as workflow_router
 from daily_workflow import DailyWorkflow, DEFAULTS as WORKFLOW_DEFAULTS, validate_settings, schedule
 from zoneinfo import ZoneInfo
 
@@ -338,16 +340,12 @@ def cors_origins() -> list[str]:
     origins = [item.strip() for item in raw.split(",") if item.strip()]
     return origins or ["*"]
 
-def current_month_week_range(local_now: datetime) -> tuple[int, int, int]:
-    day = local_now.day
-    if day <= 7:
-        return 1, 1, 7
-    if day <= 14:
-        return 2, 8, 14
-    if day <= 21:
-        return 3, 15, 21
-    last = (local_now.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-    return 4, 22, last.day
+def current_month_week_range(local_now: datetime) -> tuple[int, int, int] | None:
+    monday = local_now - timedelta(days=local_now.weekday())
+    sunday = monday + timedelta(days=6)
+    if monday.month != local_now.month or sunday.month != local_now.month:
+        return None
+    return (monday.day - 1) // 7 + 1, monday.day, sunday.day
 
 async def create_notification(
     uid: ObjectId,
@@ -939,12 +937,17 @@ async def build_context_notifications(uid: ObjectId):
                     f"mood-trend:{latest.get('date_label')}",
                 )
 
-        week_no, start_day, end_day = current_month_week_range(local_now)
+        week_range = current_month_week_range(local_now)
+        if not week_range:
+            return
+        week_no, start_day, end_day = week_range
         month_prefix = local_now.strftime("%Y-%m-")
         available_days = {
             int(str(item.get("date_label", "0000-00-00"))[-2:])
             for item in recent
             if str(item.get("date_label", "")).startswith(month_prefix)
+            and (item.get("analysis_type") == "daily" or item.get("daily_content") or item.get("final_content"))
+            and has_classification(item)
         }
         if all(day in available_days for day in range(start_day, end_day + 1)):
             await create_notification(
@@ -1726,28 +1729,22 @@ async def _save_phone_entry(uid, request, result):
             doc["date_label"] = existing["date_label"]
         saved = await db.conversations.find_one_and_update({"userId": uid, "mobile_entry_id": request.entry_id}, {"$set": doc}, upsert=True, return_document=ReturnDocument.AFTER)
         return {"synced": True, "entry_id": request.entry_id, "fragmentId": str(saved["_id"])}
-    causes = result.get("causes", [])
-    reasons = {}
-    for cause in causes:
-        for emotion in cause["emotions"]:
-            reasons.setdefault(emotion, []).append(cause["explanation"])
+    sources = daily_source_fields(result.get("causes", []), result.get("emotion_sources"))
     raw_emotion = {"emotions": scores, "dominant_emotions": sorted(scores, key=scores.get, reverse=True)[:3],
                    "emotional_intensity": None, "risk_level": result["risk_level"], "response_mode": result["response_mode"],
                    "safety_action": result["safety_action"], "classification_available": result["classification_available"],
                    "safety_check_status": result["safety_check_status"], "safety_decision": result["safety_decision"],
                    "recommend_professional_help": result["risk_level"] in {"moderate", "high"},
                    "analysis_notes": context.get("emotional_context", "本次採用固定安全回應。"),
-                   "emotion_reasons": {key: "、".join(dict.fromkeys(items)) for key, items in reasons.items()},
+                   "emotion_reasons": sources["emotion_reasons"],
                    "neural_prior": {"available": bool(scores), "backend": "modernbert", "scores": scores, **(result.get("classifier_analysis") or {})}}
     prepared = {"emotion": raw_emotion,
-                "tags": {**{kind + "_tags": [{"tag": c["topic"], "reason": c["explanation"], "evidence": c["evidence"]} for c in causes if c["type"] == kind] for kind in ("stressor", "buffer", "joy")}, "one_line_summary": context.get("event_context", "本次採用固定安全回應。")},
+                "tags": {**sources, "one_line_summary": context.get("event_context", "本次採用固定安全回應。")},
                 "feedback": result["comfort"] + ("\n" + "\n".join(result["suggestions"]) if result["suggestions"] else ""),
                 "metadata": {k: v for k, v in common.items() if k != "scores"}}
     record = await finalize_daily_diary(uid, date_label, request.content, phone_analysis=prepared)
     return {"synced": True, "entry_id": request.entry_id, "record": record}
 
 
-from mobile_feedback import router as phone_router
 app.include_router(phone_router(get_current_user, save_phone_entry, JWT_SECRET, require_final=DailyWorkflow(db).require_final))
-from mobile_workflow_api import router as workflow_router
 app.include_router(workflow_router(db, get_current_user, serialize_doc))
