@@ -1,7 +1,7 @@
 import { initLlama, type LlamaContext, type RNLlamaOAICompatibleMessage } from 'llama.rn';
 import { AppState } from 'react-native';
-import { SETTINGS, MODEL, RUNTIME_VERSION } from './config';
-import { verifyModel } from './storage';
+import { SETTINGS, RUNTIME_VERSION } from './config';
+import { PHONE_MODEL, verifyModel } from './storage';
 import { assertPromptFits, selectDisplayContent } from './policy';
 import type { PhoneSLM, SLMRun } from '../localFeedback';
 import { parseAssessment, parseCauses } from '../localFeedback';
@@ -126,7 +126,7 @@ async function json(system: string, payload: unknown, schema: object): Promise<S
     }
     if (cancelled || result.stopped_limit) throw new Error('本機輸出中止或達到長度上限。');
     const selected = selectDisplayContent(result, { thinkingForcedOpen: 'thinking_forced_open' in formatted && formatted.thinking_forced_open === true });
-    return { output: JSON.parse(selected.content), trace: { execution: 'on-device', runtime: RUNTIME_VERSION, model: MODEL.id, sha256: MODEL.sha256,
+    return { output: JSON.parse(selected.content), trace: { execution: 'on-device', runtime: RUNTIME_VERSION, model: PHONE_MODEL.id, sha256: PHONE_MODEL.sha256,
       tokens_predicted: result.tokens_predicted, duration_ms: performance.now() - started, tokens_per_second: result.timings?.predicted_per_second ?? null,
       stopped_eos: result.stopped_eos, raw_text: result.text } };
   } finally { busy = false; endTask(); }

@@ -1,7 +1,7 @@
-import { MODEL } from './config';
+import type { PhoneModel } from './config';
 
-export function assertModelIntegrity(bytes: number, sha256: string): void {
-  if (bytes !== MODEL.bytes || sha256.toLowerCase() !== MODEL.sha256) {
+export function assertModelIntegrity(model: PhoneModel, bytes: number, sha256: string): void {
+  if (bytes !== model.bytes || sha256.toLowerCase() !== model.sha256) {
     throw new Error('模型大小或 SHA-256 不符；不載入此檔案，請刪除後重新下載。');
   }
 }

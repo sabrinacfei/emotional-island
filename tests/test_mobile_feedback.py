@@ -88,6 +88,18 @@ class MobileApiTests(unittest.TestCase):
         payload["scores"] = {**SCORES, "Joy": 100}
         self.assertEqual(self.client.post("/mobile/diaries", json=payload).status_code, 422)
 
+    def test_commit_records_2b_and_rejects_another_models_digest(self):
+        payload = self.payload()
+        payload["support"]["generation"] = {**TRACE, "model": "qwen3.5-2b-q4_k_m"}
+        self.assertEqual(self.client.post("/mobile/diaries", json=payload).status_code, 422)
+        self.save.assert_not_called()
+
+        payload["support"]["generation"]["sha256"] = "20cb277f0967ace47b0b5d5658e5e494a88937f7378b74b5a266496400938f4c"
+        self.assertEqual(self.client.post("/mobile/diaries", json=payload).status_code, 200)
+        saved = self.save.await_args.args[2]
+        self.assertEqual(saved["inference_source"], "phone-qwen3.5-2b")
+        self.assertEqual(saved["generation"]["model"], "qwen3.5-2b-q4_k_m")
+
     def test_receipt_is_bound_to_the_original_diary_and_user(self):
         payload = self.payload(); payload["content"] += "內容改了"
         self.assertEqual(self.client.post("/mobile/diaries", json=payload).status_code, 409)

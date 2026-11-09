@@ -1,5 +1,6 @@
 """Authenticated fragment/draft/final and weekly read APIs. No third-party LLM."""
 from datetime import date, datetime, timedelta, timezone
+from typing import Literal
 from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ConfigDict
@@ -18,6 +19,7 @@ class Draft(BaseModel):
     model_config = ConfigDict(extra="forbid")
     content: str = Field(min_length=1, max_length=12000)
     source_ids: list[str] = Field(min_length=1)
+    draft_source: Literal["phone-qwen3.5-2b", "phone-qwen3.5-4b"] = "phone-qwen3.5-4b"
 
 
 class Final(BaseModel):
@@ -91,7 +93,7 @@ def router(db, current_user, serialize):
     @api.post("/daily/{day}/draft")
     async def draft(day: str, data: Draft, uid=Depends(current_user)):
         valid_day(day)
-        return serialize(await workflow.draft(uid, day, data.content, data.source_ids))
+        return serialize(await workflow.draft(uid, day, data.content, data.source_ids, data.draft_source))
 
     @api.post("/daily/{day}/confirm")
     async def confirm(day: str, data: Final, uid=Depends(current_user)):

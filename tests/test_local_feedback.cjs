@@ -16,11 +16,12 @@ function load(relative) {
 global.__DEV__ = false;
 const { runLocalFeedback, runImmediateSupport } = load('localFeedback');
 const { selectDisplayContent } = load('qwen/policy');
+const { PHONE_MODELS } = load('qwen/config');
 const { trendPaths } = load('weekly');
 const diary = '今天報告受到批評，覺得有點委屈，現在只想被傾聽，不需要建議。';
 const scores = { Joy: 0, Sadness: 60, Anger: 10, Fear: 30, Anticipation: 0, Surprise: 0, Disgust: 0, Trust: 0 };
 const analysis = { probabilities: Object.fromEntries(Object.entries(scores).map(([k, v]) => [k, v / 100])), chunk_count: 1, truncated: false };
-const run = output => ({ output, trace: { execution: 'on-device', tokens_predicted: 10, raw_text: JSON.stringify(output), runtime: 'test-double', model: 'test-double', sha256: '', duration_ms: 1, tokens_per_second: null, stopped_eos: true } });
+const run = (output, model = 'qwen3.5-4b-q4_k_m') => ({ output, trace: { execution: 'on-device', tokens_predicted: 10, raw_text: JSON.stringify(output), runtime: 'test-double', model, sha256: PHONE_MODELS[model].sha256, duration_ms: 1, tokens_per_second: null, stopped_eos: true } });
 const assessment = { risk_level: 'none', risk_evidence: [], support_style: 'listening', context: {
   event_context: '報告受到批評。', emotional_context: '有點委屈。', main_concern: '希望被理解。', coping_already_tried: '未提及', support_preference: '只想被傾聽。',
 } };
@@ -29,7 +30,7 @@ function setup(overrides = {}) {
   return { calls,
     classify: async text => { calls.push(['classify', text]); return { backend: 'modernbert', classification_available: true, scores, analysis, receipt_token: 'server-receipt', risk_floor: 'none', ...overrides.classification }; },
     slm: { assess: async input => { calls.push(['assess', input]); return run(overrides.assessment ?? assessment); },
-      respond: async input => { calls.push(['respond', input]); return run(overrides.support ?? { comfort: '你準備報告的付出沒有被看見，這份委屈可以慢慢說。', suggestions: [], blessing: '' }); } },
+      respond: async input => { calls.push(['respond', input]); return run(overrides.support ?? { comfort: '你準備報告的付出沒有被看見，這份委屈可以慢慢說。', suggestions: [], blessing: '' }, overrides.model); } },
   };
 }
 test('cloud scores and the complete diary reach both local stages in order', async () => {
@@ -39,6 +40,13 @@ test('cloud scores and the complete diary reach both local stages in order', asy
   assert.equal(h.calls[1][1].diary, diary); assert.deepEqual(h.calls[1][1].emotion_scores, scores);
   assert.equal(h.calls[2][1].diary, diary); assert.deepEqual(h.calls[2][1].emotion_scores, scores);
   assert.equal(h.calls[2][1].safety.response_mode, 'SUPPORT_MODE');
+});
+test('the smaller model completes local feedback with its own source', async () => {
+  const h = setup({ model: 'qwen3.5-2b-q4_k_m' });
+  const result = await runImmediateSupport(diary, h.slm);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.inference_source, 'phone-qwen3.5-2b');
+  assert.equal(result.generation.model, 'qwen3.5-2b-q4_k_m');
 });
 test('local Qwen receives original names and accepts named context and feedback', async () => {
   const original='今天林小晴陪我準備 11 月 8 日的報告，我很感謝她。';

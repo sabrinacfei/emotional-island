@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 
 import {
+  PHONE_MODEL,
   downloadModel,
   modelExists,
   verifyModel,
@@ -127,8 +128,6 @@ export function PhoneModelPreparationScreen({ onReady }: Props) {
 
       setStage('verifying');
       await preparePhoneClassifier();
-      await verifyModel();
-
       setStage('loading');
       await preparePhoneModel();
 
@@ -267,7 +266,7 @@ export function PhoneModelPreparationScreen({ onReady }: Props) {
               color: '#526B58',
             }}
           >
-            {percentage.toFixed(1)}%
+            {PHONE_MODEL.label} · {percentage.toFixed(1)}%
           </Text>
         </View>
       )}

@@ -1,4 +1,5 @@
 import { decision, ruleRisk, validateScores, EMOTIONS, type Scores, type Risk, type Context, type Decision } from './flow';
+import { PHONE_MODELS, type PhoneModel, type PhoneModelId } from './qwen/config';
 
 export type ClassifierAnalysis = { probabilities: Scores; top_3: Array<{ emotion: string; probability: number; score: number }>;
   token_count: number; chunk_count: number; chunks: unknown[]; aggregation: { method: string }; labels: string[]; truncated: boolean };
@@ -9,14 +10,14 @@ export type PhoneClassifierReply = ClassifierReply & { classifier_trace?: Classi
 export type ContextAssessment = { risk_level: Risk; risk_evidence: string[]; context: Context; support_style: 'listening' | 'suggestions' | 'unspecified' };
 export type Support = { comfort: string; suggestions: string[]; blessing: string };
 export type EmotionCause = { type: 'stressor' | 'buffer' | 'joy'; topic: string; explanation: string; evidence: string; emotions: string[] };
-export type GenerationTrace = { execution: 'on-device'; runtime: string; model: string; sha256: string;
+export type GenerationTrace = { execution: 'on-device'; runtime: string; model: PhoneModelId; sha256: string;
   tokens_predicted: number; duration_ms: number; tokens_per_second: number | null; stopped_eos: boolean; raw_text: string };
 export type SLMRun = { output: unknown; trace: GenerationTrace };
 export type LocalFeedback = Support & Decision & {
   status: 'completed' | 'local_safety' | 'unavailable';
   scores: Scores | null; classification_available: boolean; receipt_token: string | null;
   safety_check_status: 'screened' | 'unavailable'; context: Context | null;
-  inference_source: 'phone-qwen3.5-4b' | 'fixed-safety' | 'unavailable';
+  inference_source: PhoneModel['inferenceSource'] | 'fixed-safety' | 'unavailable';
   generation: GenerationTrace | null;
   classifier_analysis: ClassifierAnalysis | null;
   classifier_trace?: ClassifierTrace;
@@ -125,7 +126,9 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
     stage = 'support_validation';
     generation = responded.trace;
     const support = parseSupport(responded.output, assessment);
-    if (generation.execution !== 'on-device' || generation.tokens_predicted <= 0 || !generation.raw_text) throw new Error('Missing native generation result');
+    const model = PHONE_MODELS[generation.model];
+    if (!model || generation.sha256 !== model.sha256 || generation.execution !== 'on-device'
+      || generation.tokens_predicted <= 0 || !generation.raw_text) throw new Error('Invalid native generation result');
     let causes: EmotionCause[] = [];
     if (!immediate && slm.causes && analysis) {
       stage = 'causes';
@@ -134,7 +137,7 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
       stage = 'causes_validation';
       causes = parseCauses(found.output, diary);
     }
-    return { ...base(), ...support, causes, inference_source: 'phone-qwen3.5-4b', status: 'completed', safety_check_status: 'screened', context: assessment.context };
+    return { ...base(), ...support, causes, inference_source: model.inferenceSource, status: 'completed', safety_check_status: 'screened', context: assessment.context };
   } catch (error) {
     if (__DEV__) {
       console.error('[AI Analysis Failed]', { stage: 'local-feedback', errorType: error instanceof Error ? error.name : 'UnknownError' });

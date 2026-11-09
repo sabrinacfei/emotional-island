@@ -16,6 +16,41 @@ function load(relative, imports, extra = {}) {
   }, ...extra });
   return exports;
 }
+test('model preparation downloads the selected 2B file and reuses a verified 4B file on higher RAM', async () => {
+  const config = load('onDevice/qwen/config.ts', {});
+  const policy = load('onDevice/qwen/policy.ts', {});
+  const full = config.PHONE_MODELS['qwen3.5-4b-q4_k_m'];
+  const lite = config.PHONE_MODELS['qwen3.5-2b-q4_k_m'];
+  const directory = 'file:///test/models/';
+  const fullUri = directory + full.filename;
+  const files = new Map([[fullUri, full]]);
+  const downloaded = [];
+  const fsMock = {
+    documentDirectory: 'file:///test/',
+    makeDirectoryAsync: async () => {},
+    getInfoAsync: async uri => files.has(uri) ? { exists: true, size: files.get(uri).bytes } : { exists: false },
+    deleteAsync: async uri => { files.delete(uri); },
+    moveAsync: async ({ from, to }) => { files.set(to, files.get(from)); files.delete(from); },
+    createDownloadResumable: (url, uri) => ({ downloadAsync: async () => {
+      downloaded.push(url);
+      files.set(uri, lite);
+      return { status: 200 };
+    } }),
+  };
+  const storage = totalMemory => load('onDevice/qwen/storage.ts', {
+    'expo-device': { totalMemory }, 'expo-file-system/legacy': fsMock,
+    './config': config, './policy': policy,
+    './diagnostics': { excludeFromBackup: async () => {}, fileDigest: async uri => files.get(uri), freeDiskBytes: async () => 2 * 1024 ** 3 },
+  });
+  const standard = storage(6 * 1024 ** 3);
+  assert.equal(await standard.modelExists(), false);
+  await Promise.all([standard.downloadModel(() => {}), standard.downloadModel(() => {})]);
+  assert.deepEqual(downloaded, [lite.url]);
+  assert.equal(await standard.verifyModel(), directory + lite.filename);
+  assert.equal(await storage(null).verifyModel(), directory + lite.filename);
+  assert.equal(await storage(8 * 1024 ** 3).verifyModel(), fullUri);
+  assert.deepEqual(downloaded, [lite.url]);
+});
 function diaryStore() {
   const data = new Map();
   const storage = {

@@ -8,12 +8,18 @@ from typing import Literal
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from slm_schemas import Scores
 from safety_policy import decide
 from safety_rules import detect_safety_risk
 from modernbert_chunking import LABELS
+
+
+PHONE_SLM_DIGESTS = {
+    "qwen3.5-2b-q4_k_m": "20cb277f0967ace47b0b5d5658e5e494a88937f7378b74b5a266496400938f4c",
+    "qwen3.5-4b-q4_k_m": "a9d0a3e1d8c91732a3812becd31f8d4a8ff57414903f226306069f0437e2ac50",
+}
 
 
 class Input(BaseModel):
@@ -30,13 +36,23 @@ class NativeGeneration(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
     execution: Literal["on-device"]
     runtime: Literal["llama.rn@0.13.0-rc.9"]
-    model: Literal["qwen3.5-4b-q4_k_m"]
-    sha256: Literal["a9d0a3e1d8c91732a3812becd31f8d4a8ff57414903f226306069f0437e2ac50"]
+    model: str
+    sha256: str
     tokens_predicted: int = Field(ge=1, le=528)
     duration_ms: float = Field(gt=0)
     tokens_per_second: float | None
     stopped_eos: bool
     raw_text: str = Field(min_length=1, max_length=12000)
+
+    @model_validator(mode="after")
+    def check_model_digest(self):
+        if PHONE_SLM_DIGESTS.get(self.model) != self.sha256:
+            raise ValueError("Unrecognized phone model or digest mismatch")
+        return self
+
+    @property
+    def inference_source(self) -> str:
+        return f"phone-{self.model.removesuffix('-q4_k_m')}"
 
 
 class Cause(BaseModel):
@@ -187,7 +203,7 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
                            suggestions=["先前往有人陪伴的安全地方，遠離可能造成傷害的物品或環境。"], blessing="")
         result = {**support, "scores": scores, "classification_available": scores is not None,
                   "response_mode": route.response_mode, "safety_check_status": "screened",
-                  "safety_decision": route.model_dump(), "inference_source": "phone-qwen3.5-4b" if data.support.generation else "fixed-safety",
+                  "safety_decision": route.model_dump(), "inference_source": data.support.generation.inference_source if data.support.generation else "fixed-safety",
                   "inference_provenance": "client_reported_native_trace" if data.support.generation else "fixed_template",
                   "classifier_source": "modernbert-lora" if scores else None, "classifier_analysis": analysis,
                   "classifier_execution":classifier_execution,"classifier_trace":classifier_trace,

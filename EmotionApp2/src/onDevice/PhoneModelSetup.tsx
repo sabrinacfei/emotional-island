@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Button, Linking, Text, View } from 'react-native';
-import { downloadModel, modelExists } from './qwen/storage';
+import { PHONE_MODEL, downloadModel, modelExists } from './qwen/storage';
 import { nativeModelsAvailable } from './qwen/diagnostics';
 
 export function PhoneModelSetup() {
@@ -8,7 +8,9 @@ export function PhoneModelSetup() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('正在檢查手機模型');
   useEffect(() => { modelExists().then(value => {
-    setExists(value); setStatus(value ? '手機回饋模型已準備好' : '首次使用需下載約 2.65 GB 的手機回饋模型');
+    setExists(value);
+    const sizeGB = (PHONE_MODEL.bytes / 1e9).toFixed(2);
+    setStatus(value ? `${PHONE_MODEL.label} 已下載` : `首次使用需下載 ${PHONE_MODEL.label}（約 ${sizeGB} GB）`);
   }).catch(() => setStatus('尚無法取得手機模型，請使用原生 App。')); }, []);
   return <View style={{ backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, marginBottom: 18, gap: 8 }}>
     <Text style={{ color: '#3D2B1F' }}>{nativeModelsAvailable ? status : '本機回饋需要原生 App，無法使用 Expo Go。'}</Text>

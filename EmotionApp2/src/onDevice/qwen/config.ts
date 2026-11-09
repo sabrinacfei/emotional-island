@@ -1,6 +1,7 @@
-// Fixed digest, not a mutable model tag. Source metadata is preserved in provenance/.
-export const MODEL = Object.freeze({
+const MODEL_4B = Object.freeze({
   id: 'qwen3.5-4b-q4_k_m',
+  label: 'Qwen3.5 4B',
+  inferenceSource: 'phone-qwen3.5-4b',
   architecture: 'qwen35',
   parameterLabel: '4.2B',
   quantization: 'Q4_K_M',
@@ -10,6 +11,36 @@ export const MODEL = Object.freeze({
   url: 'https://registry.ollama.ai/v2/library/qwen3.5/blobs/sha256:a9d0a3e1d8c91732a3812becd31f8d4a8ff57414903f226306069f0437e2ac50',
   source: 'https://ollama.com/library/qwen3.5:4b',
 });
+
+const MODEL_2B = Object.freeze({
+  id: 'qwen3.5-2b-q4_k_m',
+  label: 'Qwen3.5 2B',
+  inferenceSource: 'phone-qwen3.5-2b',
+  architecture: 'qwen35',
+  parameterLabel: '1.88B',
+  quantization: 'Q4_K_M',
+  bytes: 1_274_396_992,
+  sha256: '20cb277f0967ace47b0b5d5658e5e494a88937f7378b74b5a266496400938f4c',
+  filename: 'qwen3.5-2b-q4_k_m-20cb277f.gguf',
+  url: 'https://registry.ollama.ai/v2/library/qwen3.5/blobs/sha256:20cb277f0967ace47b0b5d5658e5e494a88937f7378b74b5a266496400938f4c',
+  source: 'https://ollama.com/library/qwen3.5:2b-q4_K_M',
+});
+
+export const PHONE_MODELS = Object.freeze({
+  [MODEL_2B.id]: MODEL_2B,
+  [MODEL_4B.id]: MODEL_4B,
+});
+export type PhoneModelId = keyof typeof PHONE_MODELS;
+export type PhoneModel = (typeof PHONE_MODELS)[PhoneModelId];
+
+// The OS can report less than the advertised RAM. Use 7 GiB for the nominal 8 GB class.
+const HIGH_TIER_RAM_BYTES = 7 * 1024 ** 3;
+
+export function selectPhoneModel(totalMemory: number | null): PhoneModel {
+  return totalMemory !== null && Number.isFinite(totalMemory) && totalMemory >= HIGH_TIER_RAM_BYTES
+    ? MODEL_4B
+    : MODEL_2B;
+}
 
 export const SETTINGS = Object.freeze({
   n_ctx: 2048,

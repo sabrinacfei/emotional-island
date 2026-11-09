@@ -88,7 +88,7 @@ class DailyWorkflow:
         rows = await self.db.conversations.find({"userId": uid, "date_label": day, "type": "fragment"}).sort("timestamp", 1).to_list(None)
         return [{"id": str(x["_id"]), "content": x["content"], "timestamp": aware(x["timestamp"]).isoformat()} for x in rows]
 
-    async def draft(self, uid, day, content, source_ids):
+    async def draft(self, uid, day, content, source_ids, draft_source):
         doc = await self.ensure(uid, day, early=True)
         if not doc:
             raise HTTPException(409, "此日期沒有小日記。")
@@ -104,7 +104,7 @@ class DailyWorkflow:
         await self.db.daily_diaries.update_one({"_id": doc["_id"], "workflow_status": "pending_aggregation"}, {"$set": {
             "draft_content": content.strip(), "fragment_ids": [x["_id"] for x in await self.db.conversations.find(
                 {"userId": uid, "date_label": day, "type": "fragment"}).sort("timestamp", 1).to_list(None)],
-            "source_diary_ids": source_ids, "workflow_status": "awaiting_confirmation", "draft_source": "phone-qwen3.5-4b",
+            "source_diary_ids": source_ids, "workflow_status": "awaiting_confirmation", "draft_source": draft_source,
             "generated_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}})
         return await self.db.daily_diaries.find_one({"_id": doc["_id"]})
 

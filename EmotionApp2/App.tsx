@@ -25,6 +25,7 @@ import { Alert, DismissibleModal, NoticeProvider } from './src/ui/Overlay';
 import { ensureNotificationPermission, notificationStatus, sendLocalTestNotification } from './src/notifications';
 import { fetchWithTimeout } from './src/network';
 import { phoneSLM, composePhoneDaily } from './src/onDevice/qwen/runtime';
+import { PHONE_MODEL } from './src/onDevice/qwen/storage';
 import { SafetyResources } from './src/onDevice/PhoneModelSetup';
 import { PhoneModelPreparationScreen } from './src/onDevice/PhoneModelPreparationScreen';
 import { newPhoneDiary, pendingPhoneDiaries, savePhoneDiary, latestRecoverableFragment, type PhoneDiary } from './src/onDevice/diaryStore';
@@ -2111,7 +2112,10 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
     try {
       const data = await refresh();
       const draft = await composePhoneDaily(data.sources);
-      await post(BASE_URL, `/mobile/daily/${date}/draft`, token, { content: draft, source_ids: data.sources.map((x: any) => x.id) });
+      await post(BASE_URL, `/mobile/daily/${date}/draft`, token, {
+        content: draft, source_ids: data.sources.map((x: any) => x.id),
+        ...(PHONE_MODEL.inferenceSource === 'phone-qwen3.5-2b' ? { draft_source: PHONE_MODEL.inferenceSource } : {}),
+      });
       await refresh(); setProgress('請確認事件與感受是否符合你的原意。');
     } catch { setProgress('整理尚未完成，原始小日記仍保留，請稍後重試。'); }
     finally { setLoading(false); }
