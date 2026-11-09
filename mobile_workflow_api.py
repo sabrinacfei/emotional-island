@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ConfigDict
 from pymongo import ReturnDocument
 from daily_workflow import DailyWorkflow
+from slm_schemas import Scores
 
 
 class Fragment(BaseModel):
@@ -27,13 +28,23 @@ class Final(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
 
 
+def has_classification(row):
+    scores = row.get("scores") or {}
+    return row.get("classification_available") is not False and isinstance(scores, dict) and any(
+        type(value) in (int, float) and 0 < value <= 100
+        for key, value in scores.items() if key in Scores.model_fields
+    )
+
+
 def weekly_summary(start, analyses):
     first = date.fromisoformat(start)
-    by_date = {x["date_label"]: x for x in analyses if x.get("classification_available") is True}
+    by_date = {x["date_label"]: x for x in analyses}
     days, factors = [], {}
     for offset in range(7):
         day = (first + timedelta(days=offset)).isoformat()
         row = by_date.get(day)
+        if row and not has_classification(row):
+            row = None
         days.append({"date": day, "status": "analyzed" if row else "missing", "analysis": row})
         if not row:
             continue
@@ -103,8 +114,9 @@ def router(db, current_user, serialize):
     @api.get("/weekly/{start}")
     async def weekly(start: str, uid=Depends(current_user)):
         end = valid_day(start) + timedelta(days=6)
-        rows = await db.emotion_analyses.find({"userId": uid, "analysis_type": "daily",
-            "date_label": {"$gte": start, "$lte": end.isoformat()}}).sort("analyzed_at", 1).to_list(None)
+        rows = await db.emotion_analyses.find({"userId": uid,
+            "$or": [{"analysis_type": "daily"}, {"daily_content": {"$exists": True}}, {"final_content": {"$exists": True}}],
+            "date_label": {"$gte": start, "$lte": end.isoformat()}}).sort([("analyzed_at", 1), ("_id", 1)]).to_list(None)
         result = weekly_summary(start, [serialize(x) for x in rows])
         return result
 

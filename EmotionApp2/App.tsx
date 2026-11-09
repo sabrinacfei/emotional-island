@@ -18,7 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CLOUD_API_URL, syncPhoneFeedback, saveFragmentOriginal, getMobile, post } from './src/onDevice/cloudClient';
 import { classifyOnPhone } from './src/onDevice/modernbert/runtime';
 import { runLocalFeedback, runImmediateSupport, type LocalFeedback } from './src/onDevice/localFeedback';
-import { trendPaths, type WeekReview } from './src/onDevice/weekly';
+import { trendPaths, type WeekDay, type WeekReview } from './src/onDevice/weekly';
 import { percentageScores } from './src/onDevice/emotionScores';
 import { FeedbackTouchable as TouchableOpacity, InteractionFeedbackProvider, selectionFeedback, useInteractionFeedback } from './src/ui/InteractionFeedback';
 import { Alert, DismissibleModal, NoticeProvider } from './src/ui/Overlay';
@@ -244,6 +244,10 @@ function getEmoSource(raw: any, key: string, scoreVal: number): string {
   if (!raw || scoreVal === 0) {
     return `這筆紀錄尚未產生${EC[key]?.l || key}的具體原因。`;
   }
+  if (Array.isArray(raw.causes)) {
+    const reasons = raw.causes.filter((cause: any) => cause.emotions?.includes(key)).map((cause: any) => cause.explanation);
+    return Array.from(new Set(reasons)).join('、') || `日記中沒有足夠線索說明${EC[key]?.l || key}的來源。`;
+  }
   const cats = EMO_SRC[key] || ['st'];
   const lines: string[] = [];
   cats.forEach(c => {
@@ -300,10 +304,11 @@ function aggregateImpact(records: TreeRecord[]) {
 
   const add = (bucket: Map<string, { tag: string; score: number; reasons: string[] }>, tag: string, reason: string, score: number) => {
     if (!tag || tag === 'none' || score <= 0) return;
-    const current = bucket.get(tag) || { tag, score: 0, reasons: [] };
+    const label = TL[tag] || tag;
+    const current = bucket.get(label) || { tag: label, score: 0, reasons: [] };
     current.score += score;
     if (reason && !current.reasons.includes(reason)) current.reasons.push(reason);
-    bucket.set(tag, current);
+    bucket.set(label, current);
   };
 
   records.forEach(record => {
@@ -323,7 +328,6 @@ function aggregateImpact(records: TreeRecord[]) {
       .map(item => ({
         ...item,
         percent: Math.round((item.score / total) * 100),
-        label: TL[item.tag] || item.tag,
       }))
       .sort((a, b) => b.percent - a.percent)
       .slice(0, 5);
@@ -339,25 +343,22 @@ function aggregateImpact(records: TreeRecord[]) {
 function TagReasonSection({ raw }: { raw?: any }) {
   const groups = getTagGroups(raw);
   const renderGroup = (title: string, list: any[], bg: string, color: string) => {
-    if (!list.length) return null;
     return (
       <View style={{ marginTop: 10 }}>
         <Text style={s.sectionLabel}>{title}</Text>
-        {list.map((t: any, i: number) => (
+        {list.length ? list.map((t: any, i: number) => (
           <View key={`${title}-${i}`} style={s.tagRow}>
             <View style={[s.pill, { backgroundColor: bg }]}>
               <Text style={[s.mini, { color }]}>{TL[t.t] || t.t}</Text>
             </View>
             <Text style={[s.body, { flex: 1 }]}>{t.r}</Text>
           </View>
-        ))}
+        )) : <Text style={[s.mini, { color: C.muted }]}>
+          {raw?.classification_available === false ? '這次沒有可顯示的情緒分析。' : '日記中沒有足夠線索辨識此類來源。'}
+        </Text>}
       </View>
     );
   };
-
-  if (!groups.st.length && !groups.bt.length && !groups.jt.length) {
-    return <Text style={[s.mini, { color: '#bbb' }]}>MongoDB 目前沒有這天的標籤來源資料。</Text>;
-  }
 
   return (
     <View>
@@ -413,7 +414,8 @@ function recordMatchesMonth(record: TreeRecord, year: number, month: number) {
 
 function hasWeekAnalysis(records: TreeRecord[], year: number, month: number, week: number) {
   const { startDay, endDay } = getMonthWeekRange(year, month, week);
-  return records.some(r => recordMatchesMonth(r, year, month) && r.raw?.classification_available === true
+  return records.some(r => recordMatchesMonth(r, year, month) && r.raw?.classification_available !== false
+    && EMO_KEYS.some(key => typeof r.scores?.[key] === 'number' && r.scores[key] > 0 && r.scores[key] <= 100)
     && Number(r.date.slice(8, 10)) >= startDay && Number(r.date.slice(8, 10)) <= endDay);
 }
 
@@ -675,163 +677,80 @@ function EmotionBarChart({ scores, raw }: BarChartProps) {
 // ─────────────────────────────────────────────────────────
 // 折線圖元件（對齊 HTML drawLine）
 // ─────────────────────────────────────────────────────────
-interface LineChartProps {
-  records: TreeRecord[];
-  month: number;
-  year: number;
-  onDayChange?: (idx: number) => void;
+function shortDate(date: string) {
+  return `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
 }
 
-function EmotionLineChart({ records, month, year, onDayChange }: LineChartProps) {
-  const guideXRef = useRef<number>(-1);
-  const [guideX, setGuideXState] = useState(-1);
-  const lineXRef = useRef<number[]>([]);
-
-  const chartW = 580;
-  const chartH = 350;
-  const PL = 62, PR = 34, PT = 56, PB = 66;
-  const gW = chartW - PL - PR;
-  const gH = chartH - PT - PB;
-  const moodScores = records.map(r => calcScore(norm(r.scores || {})));
-
-  const lineX = records.map((_, i) =>
-    records.length === 1 ? PL + gW / 2 : PL + i * (gW / (records.length - 1))
-  );
-  lineXRef.current = lineX;
-
-  useEffect(() => {
-    const init = lineX[records.length - 1];
-    guideXRef.current = init;
-    setGuideXState(init);
-    onDayChange?.(records.length - 1);
-  }, [records.length]);
-
-  const findNearest = (gx: number) => {
-    let ci = 0, minD = Infinity;
-    lineXRef.current.forEach((x, i) => {
-      const d = Math.abs(x - gx);
-      if (d < minD) { minD = d; ci = i; }
-    });
-    return ci;
-  };
-
-  const clampedGuide = Math.max(PL, Math.min(chartW - PR, guideX < 0 ? lineX[records.length - 1] : guideX));
-  const si = Math.min(findNearest(clampedGuide), records.length - 1);
-  const gx = clampedGuide;
-  const hY = PT + gH + 8;
-  const diamondPath = `M ${gx} ${hY - 7} L ${gx + 6} ${hY} L ${gx} ${hY + 7} L ${gx - 6} ${hY} Z`;
-
-  const containerWidthRef = useRef(chartW);
-  const updateByX = (rawX: number) => {
-    const svgX = (rawX / containerWidthRef.current) * chartW;
-    const clamped = Math.max(PL, Math.min(chartW - PR, svgX));
-    guideXRef.current = clamped;
-    setGuideXState(clamped);
-    const idx = findNearest(clamped);
-    onDayChange?.(idx);
-  };
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (evt) => updateByX(evt.nativeEvent.locationX),
-      onPanResponderMove: (evt) => updateByX(evt.nativeEvent.locationX),
-    })
-  ).current;
-
-  const selectedRecord = records[si];
-  const selectedDayLabel = selectedRecord ? `${month}/${Number(selectedRecord.date.slice(8, 10))}` : '';
-  const selectedScore = moodScores[si] ?? 50;
-  const ttW = selectedDayLabel.length * 8 + 16;
-  let ttX = gx - ttW / 2;
-  if (ttX < PL) ttX = PL;
-  if (ttX + ttW > chartW - PR) ttX = chartW - PR - ttW;
-  const tooltipY = PT - 2;
-
-  const makeMoodPath = () => {
-    const pts = moodScores.map((v, i) => ({ x: lineX[i], y: PT + gH - (v / 100) * gH }));
-    return pts.reduce((a, p, i) => i === 0 ? `M ${p.x} ${p.y}` : `${a} L ${p.x} ${p.y}`, '');
-  };
+function EmotionLineChart({ days, selected, onDayChange }: {
+  days: WeekDay[];
+  selected: number;
+  onDayChange: (index: number) => void;
+}) {
+  const [width, setWidth] = useState(Math.max(1, SW - 86));
+  const chartHeight = 320;
+  const left = 18, right = 18, top = 48, height = 220;
+  const plotWidth = Math.max(1, width - left - right);
+  const step = plotWidth / (days.length - 1);
+  const x = (index: number) => left + step * index;
+  const y = (score: number) => top + height * (1 - score / 100);
+  const indexAt = (position: number) => Math.max(0, Math.min(days.length - 1, Math.round((position - left) / step)));
+  const dragOffset = useRef(0);
+  const responder = PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onPanResponderGrant: event => {
+      dragOffset.current = event.nativeEvent.pageX - event.nativeEvent.locationX;
+      onDayChange(indexAt(event.nativeEvent.locationX));
+    },
+    onPanResponderMove: event => onDayChange(indexAt(event.nativeEvent.pageX - dragOffset.current)),
+  });
+  const scoreFor = (analysis: any) => calcScore(norm(analysis.scores));
+  const selectedDay = days[selected];
+  const score = selectedDay.analysis ? scoreFor(selectedDay.analysis) : null;
+  const guideX = x(selected);
+  const labelX = Math.max(0, Math.min(width - 44, guideX - 22));
+  const paths = trendPaths(days, analysis => scoreFor(analysis) / 100, plotWidth, height);
 
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingRight: 8 }}>
-    <View
-      {...panResponder.panHandlers}
-      onLayout={e => { containerWidthRef.current = e.nativeEvent.layout.width; }}
-      style={{ width: chartW }}
-    >
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <Text style={[s.mini, { color: C.sub }]}>低落</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <View style={{ width: 36, height: 3, borderRadius: 2, backgroundColor: C.accent }} />
-          <Text style={[s.mini, { color: C.accent, fontFamily: FONT_BOLD }]}>心情指數 {selectedScore}%</Text>
-        </View>
-        <Text style={[s.mini, { color: C.sub }]}>開心</Text>
+    <View onLayout={event => setWidth(event.nativeEvent.layout.width)}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+        <View style={{ width: 36, height: 3, borderRadius: 2, backgroundColor: C.accent }} />
+        <Text style={[s.mini, { color: C.accent, fontFamily: FONT_BOLD }]}>
+          {score === null ? '心情指數 —' : `心情指數 ${score}%`}
+        </Text>
       </View>
-
-      <Svg width={chartW} height={chartH}>
-        {[0, 25, 50, 75, 100].map(v => {
-          const y = PT + gH - (v / 100) * gH;
-          const label = v === 0 ? '低落' : v === 50 ? '平穩' : v === 100 ? '開心' : `${v}`;
-          return (
-            <G key={v}>
-              <Line x1={PL} y1={y} x2={chartW - PR} y2={y} stroke="#f0f0f0" strokeWidth={1} />
-              <SvgText x={PL - 7} y={y + 5} fontSize={13} fill="#aaa" textAnchor="end">{label}</SvgText>
-            </G>
-          );
-        })}
-
-        {records.map((r, i) => (
-          <SvgText key={i} x={lineX[i]} y={chartH - PB + 22} fontSize={13} fill="#aaa" textAnchor="middle">
-            {`${month}/${Number(r.date.slice(8, 10))}`}
-          </SvgText>
-        ))}
-
-        <Path
-          d={makeMoodPath()}
-          fill="none"
-          stroke={C.accent}
-          strokeWidth={3}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          opacity={0.96}
-        />
-
-        {records.map((r, i) => {
-          const v = moodScores[i] || 0;
-          const y = PT + gH - (v / 100) * gH;
-          return (
-            <Circle
-              key={`${r.id}-${i}`}
-              cx={lineX[i]}
-              cy={y}
-              r={i === si ? 6 : 4}
-              fill={i === si ? C.accent : '#fff'}
-              stroke={C.accent}
-              strokeWidth={2}
-              onPress={() => {
-                guideXRef.current = lineX[i];
-                setGuideXState(lineX[i]);
-                onDayChange?.(i);
-              }}
-            />
-          );
-        })}
-
-        <Line x1={gx} y1={PT} x2={gx} y2={PT + gH} stroke="#1a1a1a" strokeWidth={1.4} strokeDasharray="4,3" />
-        <Path d={diamondPath} fill="#1a1a1a" />
-
-        {selectedDayLabel.length > 0 && (
-          <G>
-            <Rect x={ttX} y={tooltipY} width={ttW} height={22} rx={5} fill="#1a1a1a" />
-            <SvgText x={ttX + 8} y={tooltipY + 15} fontSize={12} fill="#fff" textAnchor="start">{selectedDayLabel}</SvgText>
+      <View>
+        <Svg width={width} height={chartHeight}>
+          {[0, 25, 50, 75, 100].map(value => (
+            <Line key={value} x1={left} y1={y(value)} x2={width - right} y2={y(value)} stroke="#eee" />
+          ))}
+          <G x={left} y={top}>
+            {paths.map((path, i) => (
+              <Path key={i} d={path} stroke={C.accent} strokeWidth={3} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            ))}
           </G>
-        )}
-      </Svg>
+          {days.map((day, i) => (
+            <G key={day.date}>
+              {day.analysis && <Circle cx={x(i)} cy={y(scoreFor(day.analysis))} r={selected === i ? 5 : 4}
+                fill={selected === i ? C.accent : '#fff'} stroke={C.accent} strokeWidth={2} />}
+              <SvgText x={x(i)} y={top + height + 28} fontSize={11} textAnchor="middle" fill="#888">
+                {shortDate(day.date)}
+              </SvgText>
+            </G>
+          ))}
+          <Line x1={guideX} y1={top} x2={guideX} y2={top + height} stroke="#1a1a1a" strokeWidth={1} strokeDasharray="4,3" />
+          <Polygon points={`${guideX},${top + height + 2} ${guideX + 5},${top + height + 8} ${guideX},${top + height + 14} ${guideX - 5},${top + height + 8}`} fill="#1a1a1a" />
+          <Rect x={labelX} y={top - 20} width={44} height={20} rx={4} fill="#1a1a1a" />
+          <SvgText x={labelX + 22} y={top - 6} fontSize={11} textAnchor="middle" fill="#fff">{shortDate(selectedDay.date)}</SvgText>
+        </Svg>
+        <View {...responder.panHandlers} style={StyleSheet.absoluteFill} accessible accessibilityRole="adjustable"
+          accessibilityLabel="選擇日期查看心情指數"
+          accessibilityValue={{ text: `${shortDate(selectedDay.date)}，${score === null ? '無紀錄' : `${score}%`}` }}
+          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+          onAccessibilityAction={event => onDayChange(Math.max(0, Math.min(days.length - 1,
+            selected + (event.nativeEvent.actionName === 'increment' ? 1 : -1))))} />
+      </View>
       <Text style={s.chartHint}>心情指數由正向情緒與負向情緒加權而成</Text>
     </View>
-    </ScrollView>
   );
 }
 
@@ -1916,6 +1835,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
   const treeInfo = MOOD_TREE[dominantMood] || MOOD_TREE.Joy;
   const scores = norm(rec?.scores || {});
   const top = getTopEmotions(scores, 3);
+  const dailyContent = rec?.raw?.final_content || rec?.raw?.daily_content || rec?.raw?.dailyContent;
 
   return (
     <ScreenBg source={require('./assets/Tree_of_the_Day.png')}>
@@ -1948,6 +1868,10 @@ function DayAnalysisScreen({ navigation, route }: any) {
           <Text style={[s.label, { marginBottom: 12 }]}>壓力來源、情緒緩衝、快樂來源</Text>
           <TagReasonSection raw={rec?.raw} />
         </View>
+        {!!dailyContent && <View style={s.resultCard}>
+          <Text style={[s.label, { marginBottom: 12 }]}>當天完整日記</Text>
+          <Text style={s.body}>{dailyContent}</Text>
+        </View>}
       </ScrollView>
     </ScreenBg>
   );
@@ -1959,63 +1883,110 @@ function DayAnalysisScreen({ navigation, route }: any) {
 function WeeklyAnalysisScreen({ navigation, route }: any) {
   const { token } = useContext(AuthContext);
   const now = new Date();
-  const year = route.params?.year || now.getFullYear(), month = route.params?.month || now.getMonth() + 1;
-  const startDay = route.params?.startDay || ((route.params?.week || 1) - 1) * 7 + 1;
-  const start = `${year}-${String(month).padStart(2, '0')}-${String(startDay).padStart(2, '0')}`;
+  const year = route.params?.year || now.getFullYear();
+  const month = route.params?.month || now.getMonth() + 1;
+  const week = route.params?.week || 1;
+  const start = getDateKey(year, month, route.params?.startDay || getMonthWeekRange(year, month, week).startDay);
   const [review, setReview] = useState<WeekReview | null>(null);
   const [error, setError] = useState('');
-  const [emotion, setEmotion] = useState('Joy');
   const [selected, setSelected] = useState(0);
   useEffect(() => {
-    void getMobile(BASE_URL, token, `/mobile/weekly/${start}`).then(setReview).catch(() => setError('本週資料尚未讀取，請稍後重試。'));
+    let active = true;
+    setReview(null);
+    setError('');
+    void getMobile(BASE_URL, token, `/mobile/weekly/${start}`).then((result: WeekReview) => {
+      if (!active) return;
+      const last = result.days.map(day => day.status).lastIndexOf('analyzed');
+      setSelected(Math.max(0, last));
+      setReview(result);
+    }).catch(() => { if (active) setError('本週資料尚未讀取，請稍後重試。'); });
+    return () => { active = false; };
   }, [token, start]);
-  const day = review?.days[selected];
-  const paths = review ? trendPaths(review.days, emotion) : [];
+
+  const days = review?.days || [];
+  const day = days[selected];
   const record = day?.analysis ? toTreeRecord(day.analysis) : null;
-  return <ScreenBg source={require('./assets/Weekly_Analysis.png')}><ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 90 }}>
-    <BackButton onPress={() => navigation.goBack()} /><Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>情緒走勢</Text>
-    {!!error && <Text style={s.body}>{error}</Text>}
-    {!review && !error && <ActivityIndicator color={C.accent} />}
-    {review && <>
-      <Text testID="weekly-status" style={[s.body, { marginTop: 28 }]}>七天中已有 {review.analyzed_days} 天正式分析。缺少的日期標示為無紀錄。</Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 16 }}>{Object.keys(EC).map(key => <TouchableOpacity key={key} style={[s.pill, { backgroundColor: EC[key].c + (emotion === key ? '66' : '22') }]} onPress={() => setEmotion(key)}><Text style={s.body}>{EC[key].l}</Text></TouchableOpacity>)}</View>
-      <View style={s.resultCard}>
-        <Text style={s.label}>{EC[emotion].l}分類比例</Text>
-        <Svg viewBox="-28 -18 324 205" width="100%" height={230}>
-          {[0, 0.5, 1].map(v => <G key={v}><Line x1={0} x2={280} y1={150 * (1 - v)} y2={150 * (1 - v)} stroke="#ddd" /><SvgText x={-4} y={150 * (1 - v) + 4} fontSize={9} textAnchor="end" fill="#888">{v * 100}%</SvgText></G>)}
-          {paths.map((path, i) => <Path key={i} d={path} stroke={EC[emotion].c} strokeWidth={2} fill="none" />)}
-          {review.days.map((x, i) => <G key={x.date} onPress={() => setSelected(i)}>
-            <Rect x={i * 280 / 6 - 16} y={0} width={32} height={180} fill="transparent" />
-            {x.status === 'analyzed' && <Circle cx={i * 280 / 6} cy={150 * (1 - x.analysis.scores[emotion])} r={selected === i ? 5 : 3} fill={EC[emotion].c} />}
-            <SvgText x={i * 280 / 6} y={170} fontSize={9} textAnchor="middle" fill="#777">{x.date.slice(5)}</SvgText>
-          </G>)}
-        </Svg>
-      </View>
-      <View style={s.resultCard}><Text style={s.label}>{day?.date}</Text>
-        {record ? <>
-          <Text style={s.body}>{record.summary}</Text>
-          <TouchableOpacity onPress={() => navigation.navigate('DayTree', { date: record.date, record })}><Text style={[s.body, { color: C.accent }]}>查看當日心情樹、日記與分析 ›</Text></TouchableOpacity>
-        </> : <Text style={s.body}>無紀錄</Text>}
-      </View>
-      <TouchableOpacity style={s.primaryBtn} onPress={() => navigation.navigate('WeeklyImpact', { review })}><Text style={s.primaryBtnText}>本週主要影響因素 ›</Text></TouchableOpacity>
-    </>}
-  </ScrollView></ScreenBg>;
+  const period = days.length ? `${shortDate(days[0].date)}～${shortDate(days[days.length - 1].date)}` : '';
+  return (
+    <ScreenBg source={require('./assets/Weekly_Analysis.png')}>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 90 }}>
+        <BackButton onPress={() => navigation.goBack()} />
+        <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>情緒走勢</Text>
+        {!!error && <Text style={s.body}>{error}</Text>}
+        {!review && !error && <ActivityIndicator color={C.accent} />}
+        {review && <>
+          <Text style={[s.title, { fontSize: 22, marginTop: 28 }]}>第{week}週心情趨勢 🌱</Text>
+          <Text style={[s.body, { color: C.sub, marginBottom: 12 }]}>{period}，拖動輔助線查看當天詳情</Text>
+          <Text testID="weekly-status" style={[s.mini, { color: C.muted, marginBottom: 10 }]}>
+            {review.analyzed_days === 7 ? '綜合正負情緒計算每日心情指數' : `已有 ${review.analyzed_days} / 7 天正式分析，缺少的日期標示為無紀錄。`}
+          </Text>
+          <View style={s.resultCard}>
+            <EmotionLineChart days={days} selected={selected} onDayChange={setSelected} />
+          </View>
+          <TouchableOpacity style={[s.primaryBtn, { marginBottom: 14 }]} onPress={() => navigation.navigate('WeeklyImpact', { review, week, period })}>
+            <Text style={s.primaryBtnText}>查看事件影響情緒原因　›</Text>
+          </TouchableOpacity>
+          <View style={s.resultCard}>
+            <Text style={[s.label, { color: C.accent }]}>{day?.date}</Text>
+            {record ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.body, { color: C.sub }]}>{record.summary}</Text>
+                  <TouchableOpacity onPress={() => navigation.navigate('DayTree', { date: record.date, record })}>
+                    <Text style={[s.mini, { color: C.accent, marginTop: 8 }]}>查看當日心情樹、日記與分析 ›</Text>
+                  </TouchableOpacity>
+                </View>
+                <Image source={(MOOD_TREE[record.mood] || MOOD_TREE.Joy).img} style={{ width: 72, height: 72 }} resizeMode="contain" />
+              </View>
+            ) : <Text style={s.body}>無紀錄</Text>}
+          </View>
+        </>}
+      </ScrollView>
+    </ScreenBg>
+  );
 }
 
 function WeeklyImpactScreen({ navigation, route }: any) {
-  const review: WeekReview | undefined = route.params?.review;
-  return <ScreenBg source={require('./assets/Weekly_Analysis.png')}><ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 90 }}>
-    <BackButton onPress={() => navigation.goBack()} /><Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>本週主要影響因素</Text>
-    <Text style={[s.body, { marginTop: 24 }]}>依正式日記整理事件與情緒共同出現的線索，不代表因果關係。</Text>
-    {review?.recurring_factors.length ? review.recurring_factors.map((factor, index) => <View key={index} style={s.resultCard}>
-      <Text style={s.label}>{factor.topic} · {({ stressor: '壓力來源', buffer: '緩衝來源', joy: '正向來源' } as any)[factor.type]}</Text>
-      <Text style={s.mini}>出現於 {new Set(factor.occurrences.map((x: any) => x.date)).size} 天</Text>
-      {factor.occurrences.map((x: any, j: number) => <TouchableOpacity key={j} style={{ marginTop: 12 }} onPress={() => {
-        const day = review.days.find(d => d.date === x.date);
-        if (day?.analysis) navigation.navigate('DayTree', { date: x.date, record: toTreeRecord(day.analysis) });
-      }}><Text style={[s.body, { color: C.accent }]}>{x.date}　{x.emotions.map((e: string) => EC[e]?.l || e).join('、')} ›</Text><Text style={s.body}>{x.event}</Text><Text style={s.mini}>依據：「{x.evidence}」</Text></TouchableOpacity>)}
-    </View>) : <Text style={s.body}>本週尚無可核對原文的影響因素。</Text>}
-  </ScrollView></ScreenBg>;
+  const { review, week, period } = route.params as { review: WeekReview; week: number; period: string };
+  const records = review.days.flatMap(day => day.analysis ? [toTreeRecord(day.analysis)] : []);
+  const impact = aggregateImpact(records);
+  const groups = [
+    { title: '負面情緒值最高的事件', detail: '這週哪些壓力來源最常伴隨低落、焦慮、憤怒等負向情緒。', items: impact.stressors, color: '#D85A30' },
+    { title: '開心與放鬆值最高的事件', detail: '這週哪些事件最常伴隨喜悅、信任、期待等正向情緒。', items: impact.joys, color: C.accent },
+    { title: '情緒緩衝值最高的來源', detail: '這週哪些支持、休息或行動與情緒緩和一起出現。', items: impact.buffers, color: '#4E8FA8' },
+  ];
+
+  return (
+    <ScreenBg source={require('./assets/Weekly_Analysis.png')}>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 90 }}>
+        <BackButton onPress={() => navigation.goBack()} />
+        <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>事件影響統整</Text>
+        <Text style={[s.body, { color: C.sub, marginTop: 28, marginBottom: 16 }]}>
+          第{week}週 {period}，依照每日標籤與情緒分數統整。
+        </Text>
+        {groups.map(({ title, detail, items, color }) => (
+          <View key={title} style={s.resultCard}>
+            <Text style={[s.label, { color }]}>{title}</Text>
+            <Text style={[s.body, { color: C.sub, marginTop: 6 }]}>{detail}</Text>
+            {items.length ? items.map(item => (
+              <View key={item.tag} style={{ marginTop: 14 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <View style={[s.pill, { backgroundColor: color + '22' }]}>
+                    <Text style={[s.mini, { color, fontFamily: FONT_BOLD }]}>{item.tag}</Text>
+                  </View>
+                  <Text style={[s.body, { color, fontFamily: FONT_BOLD }]}>{item.percent}%</Text>
+                </View>
+                <View style={{ height: 8, borderRadius: 8, backgroundColor: '#EEE8DE', overflow: 'hidden', marginBottom: 6 }}>
+                  <View style={{ width: `${item.percent}%`, height: 8, backgroundColor: color, borderRadius: 8 }} />
+                </View>
+                {item.reasons.slice(0, 2).map(reason => <Text key={reason} style={[s.mini, { color: C.sub }]}>{reason}</Text>)}
+              </View>
+            )) : <Text style={[s.mini, { color: C.muted, marginTop: 12 }]}>這週尚無此類事件的紀錄。</Text>}
+          </View>
+        ))}
+      </ScrollView>
+    </ScreenBg>
+  );
 }
 
 // ─────────────────────────────────────────────────────────

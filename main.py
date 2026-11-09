@@ -1726,15 +1726,21 @@ async def _save_phone_entry(uid, request, result):
             doc["date_label"] = existing["date_label"]
         saved = await db.conversations.find_one_and_update({"userId": uid, "mobile_entry_id": request.entry_id}, {"$set": doc}, upsert=True, return_document=ReturnDocument.AFTER)
         return {"synced": True, "entry_id": request.entry_id, "fragmentId": str(saved["_id"])}
+    causes = result.get("causes", [])
+    reasons = {}
+    for cause in causes:
+        for emotion in cause["emotions"]:
+            reasons.setdefault(emotion, []).append(cause["explanation"])
     raw_emotion = {"emotions": scores, "dominant_emotions": sorted(scores, key=scores.get, reverse=True)[:3],
                    "emotional_intensity": None, "risk_level": result["risk_level"], "response_mode": result["response_mode"],
                    "safety_action": result["safety_action"], "classification_available": result["classification_available"],
                    "safety_check_status": result["safety_check_status"], "safety_decision": result["safety_decision"],
                    "recommend_professional_help": result["risk_level"] in {"moderate", "high"},
                    "analysis_notes": context.get("emotional_context", "本次採用固定安全回應。"),
-                   "emotion_reasons": {emotion: c["explanation"] for c in result.get("causes", []) for emotion in c["emotions"]}, "neural_prior": {"available": bool(scores), "backend": "modernbert", "scores": scores, **(result.get("classifier_analysis") or {})}}
+                   "emotion_reasons": {key: "、".join(dict.fromkeys(items)) for key, items in reasons.items()},
+                   "neural_prior": {"available": bool(scores), "backend": "modernbert", "scores": scores, **(result.get("classifier_analysis") or {})}}
     prepared = {"emotion": raw_emotion,
-                "tags": {**{kind + "_tags": [{"tag": c["topic"], "reason": c["explanation"], "evidence": c["evidence"]} for c in result.get("causes", []) if c["type"] == kind] for kind in ("stressor", "buffer", "joy")}, "one_line_summary": context.get("event_context", "本次採用固定安全回應。")},
+                "tags": {**{kind + "_tags": [{"tag": c["topic"], "reason": c["explanation"], "evidence": c["evidence"]} for c in causes if c["type"] == kind] for kind in ("stressor", "buffer", "joy")}, "one_line_summary": context.get("event_context", "本次採用固定安全回應。")},
                 "feedback": result["comfort"] + ("\n" + "\n".join(result["suggestions"]) if result["suggestions"] else ""),
                 "metadata": {k: v for k, v in common.items() if k != "scores"}}
     record = await finalize_daily_diary(uid, date_label, request.content, phone_analysis=prepared)
