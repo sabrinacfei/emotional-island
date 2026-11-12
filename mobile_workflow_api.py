@@ -40,6 +40,7 @@ class ExampleDay(BaseModel):
     fragments: list[str] = Field(min_length=1, max_length=8)
     content: str = Field(min_length=1, max_length=12000)
     restart_from_fragments: bool = False
+    time_labels: list[str] | None = Field(default=None, max_length=8)
 
 
 def has_classification(row):
@@ -89,6 +90,14 @@ def router(db, current_user, serialize):
     @api.post("/examples/{day}")
     async def example_day(day: str, data: ExampleDay, uid=Depends(current_user)):
         target = valid_day(day)
+        settings = await workflow.settings(uid)
+        labels = data.time_labels or [f"{8 + index:02d}:00" for index in range(len(data.fragments))]
+        try:
+            times = [datetime.strptime(label, "%H:%M").time() for label in labels]
+            if len(times) != len(data.fragments) or any(value.strftime("%H:%M") != label for value, label in zip(times, labels)):
+                raise ValueError()
+        except ValueError:
+            raise HTTPException(422, "每則小日記需要有效時間。") from None
         if any(not text.strip() or len(text) > 12000 for text in data.fragments) or not data.content.strip():
             raise HTTPException(422, "示範日記內容不完整。")
         existing = await db.conversations.find({"userId": uid, "date_label": day}).to_list(None)
@@ -113,7 +122,7 @@ def router(db, current_user, serialize):
             raise HTTPException(409, "這天已有日記，請從原有紀錄繼續。")
         for index, content in enumerate(data.fragments):
             identity = ObjectId(hashlib.sha256(f"example:{uid}:{day}:{index}".encode()).hexdigest()[:24])
-            timestamp = datetime.combine(target, datetime.min.time(), timezone.utc) + timedelta(hours=index + 1)
+            timestamp = datetime.combine(target, times[index], ZoneInfo(settings["timezone"])).astimezone(timezone.utc)
             row = await db.conversations.find_one_and_update({"_id": identity}, {"$setOnInsert": {
                 "userId": uid, "date_label": day, "type": "fragment", "content": content.strip(),
                 "timestamp": timestamp, "created_at": datetime.now(timezone.utc), "status": "saved",
