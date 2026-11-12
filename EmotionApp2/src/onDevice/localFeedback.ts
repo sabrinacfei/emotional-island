@@ -11,7 +11,7 @@ export type ContextAssessment = { risk_level: Risk; risk_evidence: string[]; con
 export type Support = { comfort: string; suggestions: string[]; blessing: string };
 export type EmotionCause = { type: 'stressor' | 'buffer' | 'joy'; topic: string; explanation: string; evidence: string; emotions: string[] };
 export type EmotionSource = { emotion: string; explanation: string; evidence: string };
-export type DailySources = { causes: EmotionCause[]; emotion_sources?: EmotionSource[] };
+export type DailySources = { causes: EmotionCause[]; emotion_sources?: EmotionSource[]; source_analysis_version?: 'emotion-evidence-v2' };
 export type GenerationTrace = { execution: 'on-device'; runtime: string; model: PhoneModelId; sha256: string;
   tokens_predicted: number; duration_ms: number; tokens_per_second: number | null; stopped_eos: boolean; raw_text: string };
 export type SLMRun = { output: unknown; trace: GenerationTrace };
@@ -25,6 +25,7 @@ export type LocalFeedback = Support & Decision & {
   classifier_trace?: ClassifierTrace;
   causes?: EmotionCause[];
   emotion_sources?: EmotionSource[];
+  source_analysis_version?: 'emotion-evidence-v2';
   failure_stage?: 'classification' | 'assessment' | 'assessment_validation' | 'support' | 'support_validation' | 'causes' | 'causes_validation';
 };
 export interface PhoneSLM {
@@ -57,7 +58,7 @@ export function parseDailySources(input: unknown, diary: string): DailySources {
     seen.add(source.emotion);
     return { emotion: source.emotion, explanation: text(source.explanation, 180), evidence };
   });
-  return { causes, emotion_sources };
+  return { causes, emotion_sources, ...(value.source_analysis_version === 'emotion-evidence-v2' ? { source_analysis_version: value.source_analysis_version } : {}) };
 }
 
 const contextKeys = ['event_context', 'emotional_context', 'main_concern', 'coping_already_tried', 'support_preference'] as const;

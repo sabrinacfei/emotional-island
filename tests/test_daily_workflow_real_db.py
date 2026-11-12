@@ -89,13 +89,16 @@ class WorkflowIntegration(unittest.TestCase):
   self.assertEqual(self.db.daily_diaries.find_one({'userId':self.uid})['workflow_status'],'analyzed')
   history=self.client.get('/history',headers=self.headers).json()
   trends=self.client.get('/trends',headers=self.headers).json()
-  weekly=self.client.get('/mobile/weekly/'+self.day,headers=self.headers).json()
+  from datetime import date
+  target=date.fromisoformat(self.day)
+  monday=(target-timedelta(days=target.weekday())).isoformat()
+  weekly=self.client.get('/mobile/weekly/'+monday,headers=self.headers).json()
   self.assertEqual(len(history),1);self.assertEqual(len(trends),1)
   self.assertEqual(history[0]['scores'],trends[0]['average_scores'])
   self.assertEqual(weekly['analyzed_days'],1)
-  self.assertEqual(weekly['days'][0]['analysis']['scores'],history[0]['scores'])
-  self.assertTrue(all(x['analysis'] is None for x in weekly['days'][1:]))
-  self.assertEqual(weekly['recurring_factors'][0]['occurrences'][0]['evidence'],'報告受到批評')
+  self.assertEqual(weekly['days'][target.weekday()]['analysis']['scores'],history[0]['scores'])
+  self.assertFalse(weekly['week_ready'])
+  self.assertEqual(weekly['recurring_factors'],[])
   refresh='/mobile/daily/'+self.day+'/refresh-sources'
   source=dict(emotion='Sadness',explanation='被批評後感到委屈。',evidence='覺得委屈')
   self.assertEqual(self.post(refresh,dict(content=RAW,emotion_sources=[{**source,'evidence':'沒有寫過'}])).status_code,422)
@@ -140,7 +143,9 @@ class WorkflowIntegration(unittest.TestCase):
   other={'Authorization':'Bearer '+main.create_token(str(ObjectId()))}
   r=self.client.get('/mobile/daily/'+self.day+'/sources',headers=other)
   self.assertEqual(r.json()['sources'],[])
-  r=self.client.get('/mobile/weekly/'+self.day,headers=self.headers)
+  from datetime import date
+  target=date.fromisoformat(self.day)
+  r=self.client.get('/mobile/weekly/'+(target-timedelta(days=target.weekday())).isoformat(),headers=self.headers)
   self.assertEqual(len(r.json()['days']),7)
   self.assertTrue(all(x['analysis'] is None for x in r.json()['days']))
  def test_cross_midnight_and_timezone_schedule(self):
@@ -151,5 +156,16 @@ class WorkflowIntegration(unittest.TestCase):
   self.assertIn(self.client.post('/mobile/fragments',json={}).status_code,[401,403])
   r=self.client.patch('/daily-diary/settings',headers=self.headers,json={'timezone':'invalid/zone'})
   self.assertEqual(r.status_code,422)
+
+ def test_authorized_future_examples_remain_marked_and_do_not_replace_real_diaries(self):
+  self.fragment()
+  payload=dict(fragments=["我擔心報告。","朋友陪我討論後，我輕鬆一些。"],content="我擔心報告，朋友陪我討論後，心情輕鬆一些。")
+  self.assertEqual(self.post('/mobile/examples/'+self.day,payload).status_code,409)
+  future=(datetime.now(timezone.utc)+timedelta(days=20)).date().isoformat()
+  for _ in range(2):
+   result=self.post('/mobile/examples/'+future,payload)
+   self.assertEqual(result.status_code,200)
+   self.assertEqual(result.json()['daily']['data_origin'],'generated-example')
+  self.assertEqual(self.db.conversations.count_documents({'userId':self.uid,'date_label':future}),2)
 
 if __name__=='__main__':unittest.main()

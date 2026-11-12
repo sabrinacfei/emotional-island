@@ -1,5 +1,7 @@
 """Authenticated fragment/draft/final and weekly read APIs. No third-party LLM."""
 from datetime import date, datetime, timedelta, timezone
+import hashlib
+from bson import ObjectId
 from typing import Literal
 from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException
@@ -21,7 +23,7 @@ class Draft(BaseModel):
     model_config = ConfigDict(extra="forbid")
     content: str = Field(min_length=1, max_length=12000)
     source_ids: list[str] = Field(min_length=1)
-    draft_source: Literal["phone-qwen3.5-2b", "phone-qwen3.5-4b"] = "phone-qwen3.5-4b"
+    draft_source: Literal["phone-qwen3.5-2b", "phone-qwen3.5-4b", "generated-example"] = "phone-qwen3.5-4b"
 
 
 class Final(BaseModel):
@@ -33,6 +35,11 @@ class SourceRefresh(SourceDetails):
     content: str = Field(min_length=1, max_length=12000)
     emotion_sources: list[EmotionSource] = Field(max_length=8)
 
+class ExampleDay(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    fragments: list[str] = Field(min_length=1, max_length=8)
+    content: str = Field(min_length=1, max_length=12000)
+
 
 def has_classification(row):
     scores = row.get("scores") or {}
@@ -42,7 +49,7 @@ def has_classification(row):
     )
 
 
-def weekly_summary(start, analyses):
+def weekly_summary(start, analyses, closed=True):
     first = date.fromisoformat(start)
     by_date = {x["date_label"]: x for x in analyses}
     days, factors = [], {}
@@ -54,15 +61,17 @@ def weekly_summary(start, analyses):
         days.append({"date": day, "status": "analyzed" if row else "missing", "analysis": row})
         if not row:
             continue
-        for item in row.get("causes", []):
+        for item in row.get("causes", []) if closed else []:
             if not item.get("evidence") or item["evidence"] not in row.get("final_content", ""):
                 continue
             key = (item["type"], item["topic"].strip())
             factor = factors.setdefault(key, {"type": key[0], "topic": key[1], "occurrences": []})
             factor["occurrences"].append({"date": day, "emotions": item["emotions"], "event": item["explanation"], "evidence": item["evidence"]})
+    analyzed_days = sum(x["status"] == "analyzed" for x in days)
+    ready = closed and analyzed_days == 7
     return {"week_start": start, "week_end": days[-1]["date"], "days": days,
-            "analyzed_days": sum(x["status"] == "analyzed" for x in days),
-            "recurring_factors": sorted(factors.values(), key=lambda x: -len({y["date"] for y in x["occurrences"]})),
+            "analyzed_days": analyzed_days, "week_closed": closed, "week_ready": ready,
+            "recurring_factors": sorted(factors.values(), key=lambda x: -len({y["date"] for y in x["occurrences"]})) if ready else [],
             "interpretation": "事件與分類結果的共同出現，不代表因果關係。"}
 
 
@@ -75,6 +84,35 @@ def router(db, current_user, serialize):
             return date.fromisoformat(day)
         except ValueError:
             raise HTTPException(422, "日期格式不符。") from None
+
+    @api.post("/examples/{day}")
+    async def example_day(day: str, data: ExampleDay, uid=Depends(current_user)):
+        target = valid_day(day)
+        if any(not text.strip() or len(text) > 12000 for text in data.fragments) or not data.content.strip():
+            raise HTTPException(422, "示範日記內容不完整。")
+        existing = await db.conversations.find({"userId": uid, "date_label": day}).to_list(None)
+        diary = await db.daily_diaries.find_one({"userId": uid, "date_label": day})
+        recoverable = bool(existing) and all(row.get("data_origin") == "generated-example" for row in existing) and diary and not diary.get("analysisId")
+        if any(row.get("data_origin") != "generated-example" for row in existing) or (diary and diary.get("data_origin") != "generated-example" and not recoverable):
+            raise HTTPException(409, "這天已有日記，請從原有紀錄繼續。")
+        for index, content in enumerate(data.fragments):
+            identity = ObjectId(hashlib.sha256(f"example:{uid}:{day}:{index}".encode()).hexdigest()[:24])
+            timestamp = datetime.combine(target, datetime.min.time(), timezone.utc) + timedelta(hours=index + 1)
+            row = await db.conversations.find_one_and_update({"_id": identity}, {"$setOnInsert": {
+                "userId": uid, "date_label": day, "type": "fragment", "content": content.strip(),
+                "timestamp": timestamp, "created_at": datetime.now(timezone.utc), "status": "saved",
+                "data_origin": "generated-example", "mobile_entry_id": f"example_{day}_{index}",
+            }}, upsert=True, return_document=ReturnDocument.AFTER)
+            if row.get("userId") != uid or row.get("content") != content.strip():
+                raise HTTPException(409, "這天已建立其他示範內容。")
+        await workflow.ensure(uid, day, early=True)
+        current = await db.conversations.find({"userId": uid, "date_label": day}).to_list(None)
+        if any(row.get("data_origin") != "generated-example" for row in current):
+            raise HTTPException(409, "這天新增了其他日記，請重新讀取。")
+        await db.daily_diaries.update_one({"userId": uid, "date_label": day}, {"$set": {"data_origin": "generated-example"}})
+        sources = await workflow.sources(uid, day)
+        saved = await workflow.draft(uid, day, data.content, [row["id"] for row in sources], "generated-example")
+        return {"daily": serialize(saved), "source_count": len(sources), "data_origin": "generated-example"}
 
     @api.post("/fragments")
     async def save_fragment(data: Fragment, uid=Depends(current_user)):
@@ -134,7 +172,7 @@ def router(db, current_user, serialize):
         categories = {item["type"] for item in causes}
         causes.extend(c for c in record.get("causes", [])
                       if c["type"] not in categories and c.get("evidence") and c["evidence"] in data.content)
-        fields = daily_source_fields(causes, [item.model_dump() for item in data.emotion_sources])
+        fields = daily_source_fields(causes, [item.model_dump() for item in data.emotion_sources], data.source_analysis_version)
         updated = await db.emotion_analyses.find_one_and_update(query, {"$set": fields}, return_document=ReturnDocument.AFTER)
         if not updated:
             raise HTTPException(409, "當日分析已變更，請重新開啟。")
@@ -142,11 +180,16 @@ def router(db, current_user, serialize):
 
     @api.get("/weekly/{start}")
     async def weekly(start: str, uid=Depends(current_user)):
-        end = valid_day(start) + timedelta(days=6)
+        first = valid_day(start)
+        if first.weekday() != 0:
+            raise HTTPException(422, "週狀態必須從週一開始。")
+        end = first + timedelta(days=6)
+        settings = await workflow.settings(uid)
+        closed = datetime.now(ZoneInfo(settings["timezone"])).date() > end
         rows = await db.emotion_analyses.find({"userId": uid,
             "$or": [{"analysis_type": "daily"}, {"daily_content": {"$exists": True}}, {"final_content": {"$exists": True}}],
             "date_label": {"$gte": start, "$lte": end.isoformat()}}).sort([("analyzed_at", 1), ("_id", 1)]).to_list(None)
-        result = weekly_summary(start, [serialize(x) for x in rows])
+        result = weekly_summary(start, [serialize(x) for x in rows], closed=closed)
         return result
 
     return api

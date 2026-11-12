@@ -18,6 +18,14 @@ const { runLocalFeedback, runImmediateSupport, parseDailySources } = load('local
 const { selectDisplayContent } = load('qwen/policy');
 const { PHONE_MODELS } = load('qwen/config');
 const { trendPaths } = load('weekly');
+const { completeDiaryExcerpts, diarySentenceSpans, isSourceExplanation } = load('emotionEvidence');
+test('evidence expands to complete Chinese sentences instead of ending inside a word', () => {
+  const text='我擔心報告。朋友問我「還好嗎？」但我一時說不出來，其實我也不是每天都不開心。晚上終於解決了程式問題，我很開心。';
+  assert.deepEqual(completeDiaryExcerpts(text,['其實我也不是每天都不開']),['朋友問我「還好嗎？」但我一時說不出來，其實我也不是每天都不開心。']);
+  assert.deepEqual(completeDiaryExcerpts(text,['終於解決了程式問題']),['晚上終於解決了程式問題，我很開心。']);
+  assert.equal(diarySentenceSpans(text).length,3);
+  assert.equal(isSourceExplanation('未找到明確反感，故略過此情緒。'),false);
+});
 const diary = '今天報告受到批評，覺得有點委屈，現在只想被傾聽，不需要建議。';
 const scores = { Joy: 0, Sadness: 60, Anger: 10, Fear: 30, Anticipation: 0, Surprise: 0, Disgust: 0, Trust: 0 };
 const analysis = { probabilities: Object.fromEntries(Object.entries(scores).map(([k, v]) => [k, v / 100])), chunk_count: 1, truncated: false };

@@ -75,6 +75,7 @@ class SourceDetails(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     causes: list[Cause] = Field(default_factory=list, max_length=3)
     emotion_sources: list[EmotionSource] | None = Field(default=None, max_length=8)
+    source_analysis_version: Literal["emotion-evidence-v2"] | None = None
 
     def verify_evidence(self, content: str):
         items = self.emotion_sources or []
@@ -85,7 +86,7 @@ class SourceDetails(BaseModel):
             raise HTTPException(422, "情緒來源缺少可核對的原文依據。")
 
 
-def daily_source_fields(causes: list[dict], emotion_sources: list[dict] | None) -> dict:
+def daily_source_fields(causes: list[dict], emotion_sources: list[dict] | None, source_analysis_version: str | None = None) -> dict:
     reasons: dict[str, list[str]] = {}
     for cause in causes:
         for emotion in cause["emotions"]:
@@ -95,6 +96,7 @@ def daily_source_fields(causes: list[dict], emotion_sources: list[dict] | None) 
     return {
         "causes": causes,
         "emotion_sources": emotion_sources,
+        "source_analysis_version": source_analysis_version,
         "emotion_reasons": {key: "、".join(dict.fromkeys(items)) for key, items in reasons.items()},
         **{kind + "_tags": [{"tag": c["topic"], "reason": c["explanation"], "evidence": c["evidence"]}
                             for c in causes if c["type"] == kind] for kind in ("stressor", "buffer", "joy")},

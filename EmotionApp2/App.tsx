@@ -20,6 +20,7 @@ import { classifyOnPhone } from './src/onDevice/modernbert/runtime';
 import { runLocalFeedback, runImmediateSupport, type LocalFeedback } from './src/onDevice/localFeedback';
 import { trendPaths, type WeekDay, type WeekReview } from './src/onDevice/weekly';
 import { percentageScores } from './src/onDevice/emotionScores';
+import { completeDiaryExcerpts, emotionEvidence, isSourceExplanation } from './src/onDevice/emotionEvidence';
 import { FeedbackTouchable as TouchableOpacity, InteractionFeedbackProvider, selectionFeedback, useInteractionFeedback } from './src/ui/InteractionFeedback';
 import { Alert, DismissibleModal, NoticeProvider } from './src/ui/Overlay';
 import { ensureNotificationPermission, notificationStatus, sendLocalTestNotification } from './src/notifications';
@@ -242,16 +243,13 @@ function getEmoSource(raw: any, key: string, scoreVal: number): string {
   if (!raw || scoreVal === 0) {
     return `這筆紀錄尚未產生${EC[key]?.l || key}的具體原因。`;
   }
-  const source = raw.emotion_sources?.find((item: any) => item.emotion === key);
-  if (source) return `${source.explanation}\n\n日記原文「${source.evidence}」`;
-  if (Array.isArray(raw.causes)) {
-    const reasons = raw.causes.filter((cause: any) => cause.emotions?.includes(key))
-      .map((cause: any) => cause.evidence ? `${cause.explanation}\n日記原文「${cause.evidence}」` : cause.explanation);
-    return Array.from(new Set(reasons)).join('\n\n') ||
-      `${scoreVal}% 是模型對這篇文字的分類比例。日記裡沒有足夠線索，把${EC[key]?.l || key}連到某個具體事件。`;
+  const verified = emotionEvidence(raw, key);
+  if (verified.length) return Array.from(new Set(verified.map(source => source.explanation))).join('\n\n');
+  if (Array.isArray(raw.emotion_sources) || Array.isArray(raw.causes)) {
+    return `${scoreVal}% 是模型對這篇文字的分類比例。這個分類目前缺少能確認${EC[key]?.l || key}的日記依據，可查看原文核對。`;
   }
   const savedReason = raw.emotion_reasons?.[key] || raw.emotionReasons?.[key];
-  if (savedReason) return savedReason;
+  if (isSourceExplanation(savedReason)) return savedReason;
   const cats = EMO_SRC[key] || ['st'];
   const lines: string[] = [];
   cats.forEach(c => {
@@ -392,7 +390,7 @@ function getMonthWeekRanges(year: number, month: number) {
   const firstDow = getSafeFirstDow(year, month);
   const firstMonday = 1 + ((8 - firstDow) % 7);
   const ranges = [];
-  for (let startDay = firstMonday; startDay + 6 <= lastDay; startDay += 7) {
+  for (let startDay = firstMonday; startDay <= lastDay; startDay += 7) {
     ranges.push({ startDay, endDay: startDay + 6, lastDay });
   }
   return ranges.length ? ranges : [{ startDay: 1, endDay: lastDay, lastDay }];
@@ -409,7 +407,8 @@ function getMonthWeekRange(year: number, month: number, week: number) {
 }
 
 function getDateKey(year: number, month: number, day: number) {
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const date = new Date(year, month - 1, day);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function recordMatchesMonth(record: TreeRecord, year: number, month: number) {
@@ -420,7 +419,8 @@ function hasWeekAnalysis(records: TreeRecord[], year: number, month: number, wee
   const { startDay, endDay } = getMonthWeekRange(year, month, week);
   const analyzed = new Set(records.filter(r => r.raw?.classification_available !== false
     && EMO_KEYS.some(key => typeof r.scores?.[key] === 'number' && r.scores[key] > 0 && r.scores[key] <= 100)).map(r => r.date));
-  return endDay - startDay === 6 && Array.from({ length: 7 }, (_, index) => getDateKey(year, month, startDay + index))
+  return Date.now() >= new Date(year, month - 1, endDay + 1).getTime()
+    && endDay - startDay === 6 && Array.from({ length: 7 }, (_, index) => getDateKey(year, month, startDay + index))
     .every(date => analyzed.has(date));
 }
 
@@ -570,7 +570,10 @@ interface BarChartProps {
 }
 
 function EmotionBarChart({ scores, raw }: BarChartProps) {
-  const [popup, setPopup] = useState<{ key: string; text: string } | null>(null);
+  const [popup, setPopup] = useState<{ key: string; text: string; showOriginal: boolean } | null>(null);
+  const dailyText = raw?.final_content || raw?.daily_content || raw?.dailyContent || '';
+  const excerpts = popup ? completeDiaryExcerpts(dailyText,
+    emotionEvidence(raw, popup.key).map(source => source.evidence || '')) : [];
 
   const chartW = 560;
   const chartH = 286;
@@ -586,7 +589,7 @@ function EmotionBarChart({ scores, raw }: BarChartProps) {
   const handleBarPress = (key: string) => {
     const val = scores[key] || 0;
     const text = getEmoSource(raw, key, val);
-    setPopup({ key, text });
+    setPopup({ key, text, showOriginal: false });
   };
 
   return (
@@ -669,10 +672,31 @@ function EmotionBarChart({ scores, raw }: BarChartProps) {
       <Text style={s.chartHint}>點擊柱狀圖查看情緒來源</Text>
 
       <DismissibleModal visible={!!popup} onClose={() => setPopup(null)} overlayStyle={s.noticeOverlay}>
-        {popup && <View style={[s.elfSmallCard, { borderLeftWidth: 4, borderLeftColor: EC[popup.key].c }]}>
-          <Text style={[s.emoPopupTitle, { color: EC[popup.key].c }]}>{EC[popup.key].l}　{scores[popup.key] || 0}%</Text>
-          <Text style={s.emoPopupBody}>{popup.text}</Text>
-          <Text style={[s.mini, { marginTop: 12 }]}>輕點任意位置關閉</Text>
+        {popup && <View onStartShouldSetResponder={() => true}
+          style={[s.elfSmallCard, { borderLeftWidth: 4, borderLeftColor: EC[popup.key].c, maxHeight: SH * 0.78 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <Text style={[s.emoPopupTitle, { color: EC[popup.key].c, flex: 1 }]}>
+              {EC[popup.key].l}　{popup.showOriginal ? '日記原文' : `${scores[popup.key] || 0}%`}
+            </Text>
+            <TouchableOpacity accessibilityLabel="關閉情緒彈窗" onPress={() => setPopup(null)}>
+              <Text style={s.body}>關閉</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView testID={popup.showOriginal ? 'emotion-original-text' : 'emotion-reason-text'}
+            style={{ maxHeight: SH * 0.55 }} contentContainerStyle={{ paddingBottom: 12 }} bounces={false}>
+            {popup.showOriginal ? <>
+              {!excerpts.length && <Text style={[s.mini, { marginBottom: 12 }]}>以下顯示當日完整日記，供你核對這個分類。</Text>}
+              {(excerpts.length ? excerpts : [dailyText || '這筆紀錄尚未儲存完整日記。']).map((excerpt, index) => (
+                <Text key={index} selectable style={[s.emoPopupBody, { marginBottom: 14 }]}>{excerpt}</Text>
+              ))}
+            </> : <Text style={s.emoPopupBody}>{popup.text}</Text>}
+          </ScrollView>
+          <TouchableOpacity testID="emotion-original-toggle" style={{ paddingTop: 12 }}
+            onPress={() => setPopup({ ...popup, showOriginal: !popup.showOriginal })}>
+            <Text style={[s.body, { color: C.accent, fontFamily: FONT_BOLD }]}>
+              {popup.showOriginal ? '‹ 返回情緒原因' : '查看日記原文 >'}
+            </Text>
+          </TouchableOpacity>
         </View>}
       </DismissibleModal>
     </View>
@@ -1845,7 +1869,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
   const top = getTopEmotions(scores, 3);
   const dailyContent = rec?.raw?.final_content || rec?.raw?.daily_content || rec?.raw?.dailyContent;
   const canRefreshSources = rec?.raw?.processing_mode === 'phone_slm_v1' && rec.raw.classification_available === true
-    && rec.raw.risk_level !== 'high' && dailyContent && !Array.isArray(rec.raw.emotion_sources);
+    && rec.raw.risk_level !== 'high' && dailyContent && rec.raw.source_analysis_version !== 'emotion-evidence-v2';
 
   const refreshSources = async () => {
     if (!rec || !canRefreshSources || refreshingSources) return;
@@ -1870,6 +1894,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
         <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>
           {date || rec?.date}　心情分析
         </Text>
+        {rec?.raw?.data_origin === 'generated-example' && <Text style={[s.mini, { color: C.sub, textAlign: 'center', marginTop: 10 }]}>示範日記</Text>}
 
         {/* 主要情緒卡片 */}
         <View style={[s.resultCard, { flexDirection: 'row', alignItems: 'center', marginTop: 30 }]}>
@@ -1945,11 +1970,11 @@ function WeeklyAnalysisScreen({ navigation, route }: any) {
         <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>情緒走勢</Text>
         {!!error && <Text style={s.body}>{error}</Text>}
         {!review && !error && <ActivityIndicator color={C.accent} />}
-        {review && review.analyzed_days !== 7 && <View style={s.weekEmptyCard}>
+        {review && !review.week_ready && <View style={s.weekEmptyCard}>
           <Text style={s.weekEmptyTitle}>第{week}週心情趨勢尚未完成</Text>
-          <Text style={s.weekEmptyText}>週一到週日都完成當日分析後，就會開放週狀態。{period} 已完成 {review.analyzed_days} / 7 天。</Text>
+          <Text style={s.weekEmptyText}>{review.week_closed ? '七天當日分析齊全後，就會用這週的事件、情緒和來源彙整週狀態。' : '等週日結束且七天當日分析齊全後，就會彙整週狀態。'}{period} 已完成 {review.analyzed_days} / 7 天。</Text>
         </View>}
-        {review?.analyzed_days === 7 && <>
+        {review?.week_ready && <>
           <Text style={[s.title, { fontSize: 22, marginTop: 28 }]}>第{week}週心情趨勢 🌱</Text>
           <Text style={[s.body, { color: C.sub, marginBottom: 12 }]}>{period}，拖動輔助線查看當天詳情</Text>
           <Text testID="weekly-status" style={[s.mini, { color: C.muted, marginBottom: 10 }]}>
@@ -2165,7 +2190,7 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
     <ScreenBg source={require('./assets/journal.png')}><ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 58, paddingBottom: 90 }}>
       <BackButton onPress={() => navigation.goBack()} />
       <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>{date} 日記</Text>
-      <Text style={[s.body, { marginTop: 24 }]}>{finalized ? '日記已定稿' : '先整理並確認內容，再進行情緒分析。'}</Text>
+      <Text style={[s.body, { marginTop: 24 }]}>{daily?.data_origin === 'generated-example' ? '示範日記・' : ''}{finalized ? '日記已定稿' : '先整理並確認內容，再進行情緒分析。'}</Text>
       {daily?.confirmation_deadline && <Text style={s.mini}>確認截止：{new Date(daily.confirmation_deadline).toLocaleString('zh-TW')}</Text>}
       {!!progress && <Text testID="daily-progress" accessibilityLiveRegion="polite" style={s.body}>{progress}</Text>}
       {!daily && !sources.length && !progress && <Text style={s.body}>這一天還沒有小日記。</Text>}

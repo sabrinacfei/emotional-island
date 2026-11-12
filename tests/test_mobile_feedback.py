@@ -18,6 +18,12 @@ DAY = "2026-11-06"
 
 
 class WeeklySummaryTests(unittest.TestCase):
+    def test_week_requires_both_sunday_to_finish_and_seven_analyzed_days(self):
+        days = [{"date_label": f"2026-05-{day}", "scores": {"Joy": 0.6}} for day in range(11, 18)]
+        self.assertFalse(weekly_summary("2026-05-11", days, closed=False)["week_ready"])
+        self.assertFalse(weekly_summary("2026-05-11", days[:-1], closed=True)["week_ready"])
+        self.assertTrue(weekly_summary("2026-05-11", days, closed=True)["week_ready"])
+
     def test_legacy_daily_scores_show_up_but_unclassified_days_stay_empty(self):
         review = weekly_summary("2026-05-11", [
             {"date_label": "2026-05-11", "scores": {"Joy": 0.6}},

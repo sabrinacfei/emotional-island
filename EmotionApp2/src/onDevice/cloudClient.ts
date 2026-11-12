@@ -36,7 +36,8 @@ export async function syncPhoneFeedback(base: string, token: string, entry: { id
     receipt_token: receipt,
     support: { status: result.status, comfort: result.comfort, suggestions: result.suggestions, blessing: result.blessing,
       risk_level: result.risk_level, response_mode: result.response_mode, safety_action: result.safety_action, context: result.context,
-      generation: result.generation, causes: result.causes ?? [], emotion_sources: result.emotion_sources } });
+      generation: result.generation, causes: result.causes ?? [], emotion_sources: result.emotion_sources,
+      source_analysis_version: result.source_analysis_version } });
 }
 
 export const saveFragmentOriginal = (base: string, token: string, entry: { id: string; content: string; createdAt: string }) =>

@@ -340,12 +340,10 @@ def cors_origins() -> list[str]:
     origins = [item.strip() for item in raw.split(",") if item.strip()]
     return origins or ["*"]
 
-def current_month_week_range(local_now: datetime) -> tuple[int, int, int] | None:
-    monday = local_now - timedelta(days=local_now.weekday())
+def completed_week_range(local_now: datetime) -> tuple[datetime, datetime, int]:
+    monday = local_now - timedelta(days=local_now.weekday() + 7)
     sunday = monday + timedelta(days=6)
-    if monday.month != local_now.month or sunday.month != local_now.month:
-        return None
-    return (monday.day - 1) // 7 + 1, monday.day, sunday.day
+    return monday, sunday, (monday.day - 1) // 7 + 1
 
 async def create_notification(
     uid: ObjectId,
@@ -633,6 +631,7 @@ async def finalize_daily_diary(
         "conversationId": daily_doc["_id"],
         "dailyDiaryId": daily_doc["_id"],
         "analysis_type": "daily",
+        "data_origin": daily_doc.get("data_origin", "user-diary"),
         "date_label": date_label,
         "daily_content": final_content.strip(),
         "final_content": final_content.strip(),
@@ -937,19 +936,13 @@ async def build_context_notifications(uid: ObjectId):
                     f"mood-trend:{latest.get('date_label')}",
                 )
 
-        week_range = current_month_week_range(local_now)
-        if not week_range:
-            return
-        week_no, start_day, end_day = week_range
-        month_prefix = local_now.strftime("%Y-%m-")
-        available_days = {
-            int(str(item.get("date_label", "0000-00-00"))[-2:])
-            for item in recent
-            if str(item.get("date_label", "")).startswith(month_prefix)
-            and (item.get("analysis_type") == "daily" or item.get("daily_content") or item.get("final_content"))
-            and has_classification(item)
-        }
-        if all(day in available_days for day in range(start_day, end_day + 1)):
+        monday, sunday, week_no = completed_week_range(local_now)
+        week_rows = await db.emotion_analyses.find({"userId": uid,
+            "$or": [{"analysis_type": "daily"}, {"daily_content": {"$exists": True}}, {"final_content": {"$exists": True}}],
+            "date_label": {"$gte": monday.date().isoformat(), "$lte": sunday.date().isoformat()}
+        }).sort([("analyzed_at", 1), ("_id", 1)]).to_list(None)
+        by_date = {item["date_label"]: item for item in week_rows}
+        if all(has_classification(by_date.get((monday + timedelta(days=offset)).date().isoformat(), {})) for offset in range(7)):
             await create_notification(
                 uid,
                 "WEEK_READY",
@@ -957,8 +950,8 @@ async def build_context_notifications(uid: ObjectId):
                 "小島精靈幫你整理出一週的情緒變化。",
                 "查看週狀態",
                 "WeeklyAnalysisScreen",
-                {"week": week_no, "year": local_now.year, "month": local_now.month, "startDay": start_day, "endDay": end_day},
-                f"week-ready:{local_now.year}-{local_now.month:02d}-{week_no}",
+                {"week": week_no, "year": monday.year, "month": monday.month, "startDay": monday.day, "endDay": monday.day + 6},
+                f"week-ready:{monday.date().isoformat()}",
             )
 
 async def run_due_daily_jobs() -> dict:
@@ -1729,7 +1722,7 @@ async def _save_phone_entry(uid, request, result):
             doc["date_label"] = existing["date_label"]
         saved = await db.conversations.find_one_and_update({"userId": uid, "mobile_entry_id": request.entry_id}, {"$set": doc}, upsert=True, return_document=ReturnDocument.AFTER)
         return {"synced": True, "entry_id": request.entry_id, "fragmentId": str(saved["_id"])}
-    sources = daily_source_fields(result.get("causes", []), result.get("emotion_sources"))
+    sources = daily_source_fields(result.get("causes", []), result.get("emotion_sources"), result.get("source_analysis_version"))
     raw_emotion = {"emotions": scores, "dominant_emotions": sorted(scores, key=scores.get, reverse=True)[:3],
                    "emotional_intensity": None, "risk_level": result["risk_level"], "response_mode": result["response_mode"],
                    "safety_action": result["safety_action"], "classification_available": result["classification_available"],

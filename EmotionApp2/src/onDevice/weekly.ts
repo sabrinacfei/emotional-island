@@ -1,5 +1,5 @@
 export type WeekDay = { date: string; status: 'analyzed' | 'missing'; analysis: any | null };
-export type WeekReview = { days: WeekDay[]; analyzed_days: number };
+export type WeekReview = { days: WeekDay[]; analyzed_days: number; week_closed: boolean; week_ready: boolean };
 /** Split paths at missing days; missing never becomes zero or a line across an unobserved date. */
 export function trendPaths(days: WeekDay[], score: string | ((analysis: any) => number), width = 280, height = 150): string[] {
   const paths: string[] = []; let current = '';
