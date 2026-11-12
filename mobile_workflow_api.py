@@ -39,6 +39,7 @@ class ExampleDay(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     fragments: list[str] = Field(min_length=1, max_length=8)
     content: str = Field(min_length=1, max_length=12000)
+    restart_from_fragments: bool = False
 
 
 def has_classification(row):
@@ -92,6 +93,21 @@ def router(db, current_user, serialize):
             raise HTTPException(422, "示範日記內容不完整。")
         existing = await db.conversations.find({"userId": uid, "date_label": day}).to_list(None)
         diary = await db.daily_diaries.find_one({"userId": uid, "date_label": day})
+        if data.restart_from_fragments:
+            if len(data.fragments) < 4 or len(data.fragments) > 6:
+                raise HTTPException(422, "完整示範流程每天需要四至六則小日記。")
+            same_run = diary and diary.get("data_origin") == "generated-example" and diary.get("example_source_contents") == data.fragments
+            if not same_run:
+                for collection in ("conversations", "daily_diaries", "emotion_analyses", "emotion_trends"):
+                    rows = await db[collection].find({"userId": uid, "date_label": day}).to_list(None)
+                    for row in rows:
+                        await db.diary_example_archive.update_one(
+                            {"userId": uid, "collection": collection, "originalId": row["_id"]},
+                            {"$setOnInsert": {"snapshot": row, "archived_at": datetime.now(timezone.utc), "date_label": day}},
+                            upsert=True)
+                for collection in ("conversations", "daily_diaries", "emotion_analyses", "emotion_trends"):
+                    await db[collection].delete_many({"userId": uid, "date_label": day})
+                existing, diary = [], None
         recoverable = bool(existing) and all(row.get("data_origin") == "generated-example" for row in existing) and diary and not diary.get("analysisId")
         if any(row.get("data_origin") != "generated-example" for row in existing) or (diary and diary.get("data_origin") != "generated-example" and not recoverable):
             raise HTTPException(409, "這天已有日記，請從原有紀錄繼續。")
@@ -111,6 +127,11 @@ def router(db, current_user, serialize):
             raise HTTPException(409, "這天新增了其他日記，請重新讀取。")
         await db.daily_diaries.update_one({"userId": uid, "date_label": day}, {"$set": {"data_origin": "generated-example"}})
         sources = await workflow.sources(uid, day)
+        if data.restart_from_fragments:
+            await db.daily_diaries.update_one({"userId": uid, "date_label": day},
+                {"$set": {"example_source_contents": data.fragments}})
+            saved = await db.daily_diaries.find_one({"userId": uid, "date_label": day})
+            return {"daily": serialize(saved), "source_count": len(sources), "data_origin": "generated-example"}
         saved = await workflow.draft(uid, day, data.content, [row["id"] for row in sources], "generated-example")
         return {"daily": serialize(saved), "source_count": len(sources), "data_origin": "generated-example"}
 

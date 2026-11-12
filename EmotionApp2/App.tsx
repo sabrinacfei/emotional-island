@@ -685,8 +685,8 @@ function EmotionBarChart({ scores, raw }: BarChartProps) {
           <ScrollView testID={popup.showOriginal ? 'emotion-original-text' : 'emotion-reason-text'}
             style={{ maxHeight: SH * 0.55 }} contentContainerStyle={{ paddingBottom: 12 }} bounces={false}>
             {popup.showOriginal ? <>
-              {!excerpts.length && <Text style={[s.mini, { marginBottom: 12 }]}>以下顯示當日完整日記，供你核對這個分類。</Text>}
-              {(excerpts.length ? excerpts : [dailyText || '這筆紀錄尚未儲存完整日記。']).map((excerpt, index) => (
+              {!excerpts.length && <Text style={[s.mini, { marginBottom: 12 }]}>目前沒有能確認對應這個情緒的原文段落。</Text>}
+              {excerpts.map((excerpt, index) => (
                 <Text key={index} selectable style={[s.emoPopupBody, { marginBottom: 14 }]}>{excerpt}</Text>
               ))}
             </> : <Text style={s.emoPopupBody}>{popup.text}</Text>}
