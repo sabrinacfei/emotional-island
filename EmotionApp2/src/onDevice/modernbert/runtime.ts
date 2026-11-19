@@ -17,7 +17,7 @@ export async function preparePhoneClassifier(): Promise<void> {
   if (metadata.model !== PHONE_CLASSIFIER.model || metadata.model_sha256 !== PHONE_CLASSIFIER.model_sha256
     || metadata.tokenizer_sha256 !== PHONE_CLASSIFIER.tokenizer_sha256) throw new Error('手機分類模型版本不一致。');
 }
-export async function classifyOnPhone(text: string): Promise<PhoneClassifierReply> {
+export async function classifyEnglishOnPhone(text: string): Promise<PhoneClassifierReply> {
   const endTask = beginModelTask('modernbert-classification');
   try {
     // The generation model is reloaded on the next Qwen request. No simultaneous model residency is required.

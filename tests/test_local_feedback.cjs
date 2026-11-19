@@ -194,17 +194,22 @@ test('daily composition synthesizes all chronological originals in one generatio
   assert.equal(calls.length,1); assert.deepEqual(calls[0].map(s=>s.content), [sources[1].content,sources[0].content]);
   assert.equal(sources[0].id,'night');
 });
-test('long diary reduction always runs a final synthesis rather than returning joined fragments', async () => {
-  const calls = [];
-  const sources = [0,1].map(i=>({id:String(i),timestamp:String(i),content:'原始片段'+i+'x'.repeat(80)}));
-  const prose='我先完成報告，到了晚上和朋友散步，心情逐漸放鬆。';
-  const result=await composeDaily(sources,async segments=>{
-    calls.push(segments);
-    if(segments.map(s=>s.content).join('').length>100) throw new RangeError('measured prompt budget');
-    return {diary:segments.length===1?'精簡事件'+segments[0].timestamp:prose};
-  },e=>e instanceof RangeError);
-  assert.equal(result,prose); assert.equal(calls.length,4);
-  assert.deepEqual(calls[3].map(s=>s.content),['精簡事件0','精簡事件1']);
+test('long diary composition retains every original group without summarizing summaries again', async () => {
+ const calls=[];
+ const sources=[0,1].map(i=>({id:String(i),timestamp:String(i),content:'原始片段'+i+'x'.repeat(80)}));
+ const result=await composeDaily(sources,async segments=>{
+  calls.push(segments);
+  if(segments.map(s=>s.content).join('').length>100)throw new RangeError('measured prompt budget');
+  return{diary:'保留事件'+segments[0].timestamp};
+ },e=>e instanceof RangeError);
+ assert.equal(result,'保留事件0 保留事件1');assert.equal(calls.length,3);
+ assert.deepEqual(calls.slice(1).flatMap(c=>c.map(s=>s.content)),sources.map(s=>s.content));
+});
+test('six daily fragments are composed in ordered groups without a final event-dropping rewrite',async()=>{
+ const sources=Array.from({length:6},(_,i)=>({id:String(i),timestamp:String(i),content:'事件'+i}));const seen=[];
+ const result=await composeDaily(sources,async segments=>{seen.push(segments);return{diary:segments.map(s=>s.content).join('，')+'。'}},()=>false);
+ assert.equal(seen.length,3);assert.deepEqual(seen.flat().map(s=>s.content),sources.map(s=>s.content));
+ for(const source of sources)assert.ok(result.includes(source.content));
 });
 test('composition errors preserve originals and never masquerade as a completed daily draft', async () => {
   const source=[{id:'1',timestamp:'1',content:'原始日記'}];
@@ -222,4 +227,302 @@ test('already converted percentages containing a one-percent emotion are never s
   assert.deepEqual(percentageScores(percentageScores(probabilities)),percentages);
   assert.deepEqual(percentageScores(percentages),percentages);
   assert.deepEqual(percentageScores({Joy:1,Sadness:0}),{Joy:100,Sadness:0});
+});
+
+const { generateGroundedSources, sourceUnits } = load('qwen/sourceAnalysis');
+const { SOURCE_STATE_SYSTEM, parseSourceEmotionStates } = load('qwen/sourceStates');
+const stateOutput=(phrase,emotion,effect='unclear',holder='writer')=>({output:{states:[{phrase,emotion,effect,holder}]}});
+test('unsupported explanations are rejected on ingestion, not presented as emotion reasons', () => {
+  for (const explanation of ['無相關事件引發開心，無法建立對應依據。','沒有足夠線索。','未找到信任的來源，故略過。']) {
+    assert.equal(isSourceExplanation(explanation), false);
+    assert.throws(() => parseDailySources({ causes: [], emotion_sources: [{ emotion: 'Joy', explanation, evidence: diary.slice(0,8) }] }, diary));
+  }
+});
+test('source quotes preserve full context including negation and outcomes across splits', () => {
+  const input='我戴上耳機，希望安靜。可是噪音仍然很大，我更生氣了。後來朋友帶我散步，我才慢慢放鬆。';
+  const units=sourceUnits(input);
+  assert.equal(units[0].text,'我戴上耳機，希望安靜。');
+  assert.ok(units[0].context.includes('我更生氣了。'));
+  assert.ok(units[1].context.includes('希望安靜。'));
+  assert.deepEqual(units.map(u=>u.text).join(''),input);
+});
+function emptyExtraction(system) { if(system.includes('辨識一筆調適行動'))return{output:{attempted:false,outcome:'unclear',topic:'',reason:'',quote:'',emotion:'Joy'}}; return {output:system.includes('只找一筆')?{present:false,topic:'',reason:'',quote:'',emotion:'Joy'}:{supported:false,reason:'',quote:''}}; }
+test('focused review rejects failed coping and unsupported emotions without inventing replacements',async()=>{
+ const raw='我試著運動，但還是很煩躁。她很快樂，我卻難過。';const seen=[];
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  seen.push(payload);
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('很快樂','Joy','unclear','other');
+  if(payload.source_quote)return{output:{cause_clause_ids:payload.cause_clauses.map(c=>c.id),topic:'對應事件'}};
+  if(payload.quote&&payload.explanation)return{output:{supported:false}};
+  if(system.includes('辨識一筆調適行動'))return{output:{attempted:true,outcome:'not_improved',topic:'運動',reason:'運動後仍煩躁。',sentence_ids:[1],emotion:'Anger'}};
+  if(system.includes('這次只判 Joy'))return{output:{supported:true,reason:'她快樂所以我開心。',sentence_ids:[2]}};
+  return emptyExtraction(system);
+ },()=>false);
+ assert.deepEqual(result.causes,[]);assert.deepEqual(result.emotion_sources,[]);
+ assert.ok(seen.some(p=>p.quote==='她很快樂，我卻難過。'));assert.ok(seen.every(p=>!('scores' in p)&&!('emotion_probabilities' in p)));
+});
+test('successful relief requires both an improved outcome and an exact source quote',async()=>{
+ const raw='和同學聊過之後，我漸漸安心。';
+ for(const outcome of ['improved','unclear','not_improved']) {
+  const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('安心','Trust','improved');
+   if(payload.source_quote)return{output:{cause_clause_ids:payload.cause_clauses.map(c=>c.id),topic:'對應事件'}};
+   if(payload.quote&&payload.explanation)return{output:{supported:true}};
+   if(system.includes('辨識一筆調適行動'))return{output:{attempted:true,outcome,topic:'同學陪伴',reason:'談話後安心。',sentence_ids:[1],emotion:'Anger'}};
+   return emptyExtraction(system);
+  },()=>false);
+  assert.equal(result.causes.length,outcome==='improved'?1:0);
+  if(outcome==='improved')assert.deepEqual(result.causes[0].emotions,['Trust']);
+ }
+});
+test('invented quotes and malformed reviews never become accepted evidence',async()=>{
+ const raw='這個景色讓我很驚訝。';
+ const invalid=await generateGroundedSources(raw,async(system,payload)=>system.includes('這次只判 Surprise')?
+  {output:{supported:true,reason:'景色出乎預期。',sentence_ids:[99]}}:emptyExtraction(system),()=>false);
+ assert.deepEqual(invalid.emotion_sources,[]);
+ await assert.rejects(generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('很驚訝','Surprise');
+  if(payload.source_quote)return{output:{cause_clause_ids:payload.cause_clauses.map(c=>c.id),topic:'對應事件'}};
+  if(payload.quote&&payload.explanation)return{output:{}};
+  return system.includes('這次只判 Surprise')?{output:{supported:true,reason:'景色出乎預期。',sentence_ids:[1]}}:emptyExtraction(system);
+ },()=>false),/Invalid evidence review/);
+});
+const { translateClassificationDiary }=load('classificationTranslation');
+test('classification translation preserves exact originals and refuses meaning changes',async()=>{
+ const input='我試著聽音樂，但還是很煩躁。\n\n晚上朋友陪我，我才放鬆。';
+ let checks=0;
+ const result=await translateClassificationDiary(input,async(system,payload)=>{
+  if('source' in payload){checks++;return{output:{faithful:true,issues:[]}};}
+  return{output:{english:'I tried listening to music but remained irritated. In the evening, my friend stayed with me and only then did I relax.'}};
+ },()=>false);
+ assert.equal(result.segments.map(s=>s.source).join(''),input);assert.ok(checks);
+ assert.match(result.text,/remained irritated/);
+ await assert.rejects(translateClassificationDiary(input,async(system,payload)=>({output:'source' in payload?{faithful:false,issues:['Emotion was changed']}:{english:'Listening to music made me happy.'}}),()=>false),/changed diary meaning/);
+});
+test('translation budget splitting never summarizes or drops source characters',async()=>{
+ const input='早上收到壞消息，我很難過。晚上和朋友聊過後比較安心。';
+ const result=await translateClassificationDiary(input,async(system,payload)=>{
+  if('source' in payload)return {output:{faithful:true,issues:[]}};
+  if(payload.diary===input)throw new RangeError('budget');
+  return{output:{english:payload.diary.startsWith('早上')?'I felt sad after bad news in the morning.':'I felt reassured after talking with a friend at night.'}};
+ },e=>e instanceof RangeError);
+ assert.equal(result.segments.length,2);assert.equal(result.segments.map(s=>s.source).join(''),input);
+});
+
+const { TranslationService }=load('TranslationService');
+const { EmotionClassificationService }=load('EmotionClassificationService');
+test('classification service sends only faithful English into the unchanged classifier and retains Chinese binding',async()=>{
+ const raw='我試著戴耳機，還是很煩。';let input;
+ const translator=new TranslationService(async(system,payload)=>run('source' in payload?{faithful:true,issues:[]}:{english:'I tried wearing headphones but was still annoyed.'}),()=>false);
+ const service=new EmotionClassificationService(translator,async(text)=>{input=text;return {backend:'modernbert',classification_available:true,scores,analysis,receipt_token:'receipt',risk_floor:'none'};});
+ const result=await service.classify(raw);
+ assert.equal(input,'I tried wearing headphones but was still annoyed.');assert.deepEqual(result.scores,scores);
+ assert.equal(result.classification_translation.segments[0].source,raw);
+ assert.equal(result.classification_translation.version,'zh-en-faithful-v1');
+});
+test('a translated dominant emotion without Chinese evidence stays incomplete and keeps raw scores',async()=>{
+ for(const supported of [false,true]) {
+  const h=setup({classification:{classification_translation:{version:'zh-en-faithful-v1'}}});
+  h.slm.causes=async()=>({output:{causes:[],emotion_sources:supported?[{emotion:'Sadness',explanation:'被批評後覺得委屈。',evidence:'覺得有點委屈'}]:[],source_analysis_version:'emotion-evidence-v4'}});
+  const result=await runLocalFeedback(diary,h.classify,h.slm);
+  assert.equal(result.status,supported?'completed':'unavailable');assert.deepEqual(result.scores,scores);
+  if(!supported)assert.equal(result.failure_stage,'causes_validation');
+ }
+});
+test('failed coping is shown as a sourced supplement and never as a buffer',async()=>{
+ const cause='有人插隊讓我很生氣。', attempt='我試著戴耳機，但仍無法專心，心情沒有改善。',raw=cause+attempt;
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('很生氣','Anger');
+  if(payload.source_quote)return{output:{cause_clause_ids:payload.cause_clauses.map(c=>c.id),topic:'對應事件'}};
+  if(payload.quote&&payload.explanation)return{output:{supported:true}};
+  if(payload.source)return{output:{supported:true}};
+  if(system.includes('辨識一筆調適行動'))return{output:{attempted:true,outcome:'not_improved',topic:'耳機',reason:'戴耳機後仍無法專心，情緒沒有改善。',sentence_ids:[2],emotion:'Anger'}};
+  if(system.includes('這次只判 Anger'))return{output:{supported:true,reason:'插隊讓我生氣。',sentence_ids:[1]}};
+  return emptyExtraction(system);
+ },()=>false,['Anger'],{Anger:85,Joy:0});
+ assert.equal(result.causes.some(c=>c.type==='buffer'),false);
+ assert.match(result.emotion_sources[0].coping_note,/沒有改善/);
+ assert.deepEqual(result.emotion_sources[0].additional_evidence,[attempt]);
+ assert.throws(()=>parseDailySources({causes:[],emotion_sources:[{...result.emotion_sources[0],additional_evidence:['原文沒有的句子']}]},raw));
+});
+test('real negative causes are not mistaken for an unsupported-analysis template',()=>{
+ for(const reason of ['未找到程式錯誤原因，讓我持續焦慮。','沒有明確的交期，讓我對進度感到不安。','對方略過我的提案，讓我覺得不被尊重。','無法建立開發環境，讓我感到挫折。'])assert.equal(isSourceExplanation(reason),true,reason);
+ for(const reason of ['日記沒有足夠線索判斷。','無法建立對應依據。','無直接壓力來源依據。'])assert.equal(isSourceExplanation(reason),false,reason);
+});
+test('model-selected sentence IDs become exact Chinese text and ignore invented quotations',async()=>{
+ const raw='早上和朋友吃飯。後來有人插隊，我真的很生氣。';
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('很生氣','Anger');
+  if(payload.source_quote)return{output:{topic:'插隊',cause_clause_ids:payload.cause_clauses.map(c=>c.id)}};
+  if(payload.quote&&payload.explanation)return{output:{supported:true}};
+  if(system.includes('這次只判 Anger'))return{output:{supported:true,sentence_ids:[2],quote:'模型另寫的假引句。'}};
+  return emptyExtraction(system);
+ },()=>false,['Anger'],{Anger:100});
+ assert.equal(result.emotion_sources[0].evidence,'後來有人插隊，我真的很生氣。');
+ assert.deepEqual(result.causes[0].emotions,['Anger']);
+});
+
+test('emotion tree ordering uses raw probabilities before rounded percent ties', () => {
+  const {rankedEmotionScores}=load('emotionScores');
+  assert.deepEqual(rankedEmotionScores({Anger:34,Sadness:34,Joy:0},{Anger:0.34152,Sadness:0.34172,Joy:0.0001},2),[['Sadness',34],['Anger',34]]);
+  assert.deepEqual(rankedEmotionScores({Anger:40,Sadness:60},{},1),[['Sadness',60]]);
+});
+
+test('separate selected events never include unrelated intervening diary text',async()=>{
+ const raw='插隊讓我生氣。午餐很好吃。被誤會讓我生氣。';const quotes=[];
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('生氣','Anger');
+  if(payload.source_quote){quotes.push(payload.source_quote);return{output:{topic:'不公平事件',cause_clause_ids:payload.cause_clauses.map(c=>c.id)}};}
+  if(payload.quote&&payload.explanation)return{output:{supported:true}};
+  if(system.includes('這次只判 Anger'))return{output:{supported:true,sentence_ids:[1,3]}};
+  return emptyExtraction(system);
+ },()=>false,['Anger'],{Anger:100});
+ assert.deepEqual(quotes,['插隊讓我生氣。','被誤會讓我生氣。']);
+ assert.equal(result.emotion_sources[0].evidence,'插隊讓我生氣。');
+});
+
+test('reason text comes from original clauses even if the model invents another reason',async()=>{
+ const raw='有人誤會我，我解釋後終於釐清，對方卻沒有道歉，讓我很生氣。';
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('很生氣','Anger');
+  if(payload.source_quote)return{output:{topic:'誤會',cause_clause_ids:[2,3,4],reason:'我解釋無效。'}};
+  if(payload.quote&&payload.explanation)return{output:{supported:true}};
+  if(system.includes('這次只判 Anger'))return{output:{supported:true,sentence_ids:[1]}};
+  return emptyExtraction(system);
+ },()=>false,['Anger'],{Anger:100});
+ assert.equal(result.emotion_sources[0].explanation,raw);
+ assert.ok(raw.includes(result.emotion_sources[0].explanation));
+});
+
+test('motivation and future arrangements alone do not establish emotional relief',()=>{
+ const {hasReliefOutcome}=load('qwen/sourceAnalysis');
+ assert.equal(hasReliefOutcome('把事情寫進行事曆，發現好多值得期待的安排，覺得充滿動力。'),false);
+ assert.equal(hasReliefOutcome('跟朋友聊完後，我慢慢放鬆。'),true);
+ assert.equal(hasReliefOutcome('散步讓我心情變好。'),true);
+});
+
+
+test('exact feelings and holder checks reject reassurance as joy and another persons recovery',async()=>{
+ for(const [raw,phrase,emotion,holder,kind] of [
+  ['朋友可靠的協助讓我安心。','安心','Trust','writer','Joy'],
+  ['聽完我的安慰，朋友終於放鬆了。','放鬆','Other','other','buffer'],
+ ]) {
+  const out=await generateGroundedSources(raw,async(system,payload)=>{
+   if(system===SOURCE_STATE_SYSTEM)return stateOutput(phrase,emotion,'improved',holder);
+   if(payload.source_quote)return {output:{topic:'朋友',cause_clause_ids:[1]}};
+   if(payload.quote&&payload.explanation)return {output:{supported:true}};
+   if(system.includes('辨識一筆調適行動'))return kind==='buffer'?{output:{attempted:true,outcome:'improved',topic:'朋友',reason:raw,sentence_ids:[1],emotion:'Trust'}}:emptyExtraction(system);
+   return {output:{supported:true,sentence_ids:[1]}};
+  },()=>false,kind==='Joy'?['Joy']:[],{Joy:90,Trust:10});
+  assert.deepEqual(out.emotion_sources,[]);assert.deepEqual(out.causes,[]);
+ }
+});
+test('actual writer recovery can be a buffer without manufacturing joy',async()=>{
+ const raw='朋友陪我散步後，我終於放鬆了。';
+ const out=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('放鬆','Other','improved');
+  if(payload.source_quote)return {output:{topic:'散步',cause_clause_ids:[1,2]}};
+  if(payload.quote&&payload.explanation)return {output:{supported:true}};
+  if(system.includes('辨識一筆調適行動'))return {output:{attempted:true,outcome:'improved',topic:'散步',reason:raw,sentence_ids:[1],emotion:'Trust'}};
+  return emptyExtraction(system);
+ },()=>false);
+ assert.equal(out.causes[0].type,'buffer');assert.deepEqual(out.causes[0].emotions,[]);assert.deepEqual(out.emotion_sources,[]);
+});
+test('state phrases absent from original cannot prove a model estimate',()=>{
+ assert.deepEqual(parseSourceEmotionStates(stateOutput('很開心','Joy').output,'我很生氣。'),[]);
+});
+test('separate semicolon events keep the full matching event without attaching the next one',()=>{
+ const raw='中午餐具很髒，我很反感；下午客服推責任，我很生氣。';
+ assert.deepEqual(completeDiaryExcerpts(raw,['我很反感']),['中午餐具很髒，我很反感；']);
+});
+test('missing original evidence cannot become a legacy tag explanation',()=>{
+ const {emotionEvidence}=load('emotionEvidence');
+ assert.deepEqual(emotionEvidence({final_content:'我很生氣。',emotion_sources:[],causes:[{emotions:['Joy'],explanation:'我很開心',evidence:'我很生氣。'}]},'Joy'),[]);
+ assert.deepEqual(emotionEvidence({final_content:'我很生氣。',emotion_sources:[{emotion:'Joy',explanation:'我很開心',evidence:'不存在的快樂'}]},'Joy'),[]);
+});
+
+test('emotion reason retains needed preceding context without attaching the next event',()=>{
+ const {completeEmotionEvent}=load('emotionEvidence');
+ const text='早上發生地震，我遠離櫃子。雖然搖晃不久，我還是害怕。午餐很好吃。';
+ assert.equal(completeEmotionEvent(text,'還是害怕'),'早上發生地震，我遠離櫃子。雖然搖晃不久，我還是害怕。');
+ assert.equal(completeEmotionEvent('聽音樂讓我的心情變好。後來去買蛋糕。','心情變好'),'聽音樂讓我的心情變好。');
+});
+
+test('one happy future event is not duplicated across joy source rows',async()=>{
+ const raw='想到下週旅行，我很開心，也很期待。';
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return {output:{states:[
+   {phrase:'很開心',emotion:'Joy',effect:'unclear',holder:'writer'},
+   {phrase:'很期待',emotion:'Anticipation',effect:'unclear',holder:'writer'}]}};
+  if(payload.source_quote)return {output:{topic:'旅行的期待',cause_clause_ids:[1,2,3]}};
+  if(payload.quote&&payload.explanation)return {output:{supported:true}};
+  if(system.includes('辨識一筆調適行動'))return emptyExtraction(system);
+  return {output:{supported:true,sentence_ids:[1]}};
+ },()=>false,['Joy','Anticipation'],{Joy:40,Anticipation:60});
+ assert.equal(result.emotion_sources.length,2);
+ assert.equal(result.causes.length,1);
+ assert.deepEqual(new Set(result.causes[0].emotions),new Set(['Joy','Anticipation']));
+ assert.equal(result.causes[0].evidence,raw);
+});
+
+test('context expansion uses the actual selected occurrence of a repeated feeling',()=>{
+ const {completeEmotionEvent}=load('emotionEvidence');
+ const raw='早上我害怕考試。後來突然地震，我遠離櫃子。雖然搖晃不久，我還是害怕。';
+ assert.equal(completeEmotionEvent(raw,'害怕','雖然搖晃不久，我還是害怕。'),'後來突然地震，我遠離櫃子。雖然搖晃不久，我還是害怕。');
+});
+
+test('model review cannot label mere observation as joy without a positive feeling',async()=>{
+ const raw='我完全沒想到 AR 效果這麼逼真，忍不住轉頭觀察。';
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('忍不住轉頭觀察','Joy');
+  if(payload.source_quote)return {output:{topic:'AR',cause_clause_ids:[1,2]}};
+  if(payload.quote&&payload.explanation)return {output:{supported:true}};
+  if(system.includes('辨識一筆調適行動'))return emptyExtraction(system);
+  return {output:{supported:true,sentence_ids:[1]}};
+ },()=>false,['Joy'],{Joy:15,Surprise:85});
+ assert.deepEqual(result.emotion_sources,[]);assert.deepEqual(result.causes,[]);
+ const {hasExplicitJoy}=load('qwen/sourceAnalysis');
+ for(const phrase of ['很開心','心情變得很好','感到有成就感','覺得幸福','享受音樂'])assert.equal(hasExplicitJoy(phrase),true);
+ for(const phrase of ['很安心','非常可靠','很神奇','忍不住觀察','不開心','沒有很快樂'])assert.equal(hasExplicitJoy(phrase),false);
+});
+
+test('late real relief in selected events is checked with its own action context',async()=>{
+ const raw='今天收到壞消息，我很難過。後來朋友幫我解決問題，讓我安心。';
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return payload.quote===raw?{output:{states:[]}}:payload.quote.includes('安心')?stateOutput('安心','Trust','improved'):{output:{states:[]}};
+  if(payload.source_quote)return {output:{topic:'朋友協助',cause_clause_ids:[1,2]}};
+  if(payload.quote&&payload.explanation)return {output:{supported:true}};
+  if(system.includes('辨識一筆調適行動'))return {output:{attempted:true,outcome:'improved',topic:'朋友協助',reason:'朋友協助後安心。',sentence_ids:[1,2],emotion:'Anger'}};
+  return emptyExtraction(system);
+ },()=>false,[],{Sadness:80,Trust:20});
+ assert.equal(result.causes[0].type,'buffer');
+ assert.deepEqual(result.causes[0].emotions,['Trust']);
+ assert.equal(result.causes[0].evidence,'後來朋友幫我解決問題，讓我安心。');
+});
+
+test('explicit cause of distress is not replaced by the later helper as a stressor label',async()=>{
+ const raw='剛開始因為看不到周圍環境，我有點緊張，但夥伴耐心指引。';
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('有點緊張','Fear');
+  if(payload.source_quote)return {output:{topic:'夥伴耐心指引',cause_clause_ids:[1,2,3]}};
+  if(payload.quote&&payload.explanation)return {output:{supported:true}};
+  if(system.includes('辨識一筆調適行動'))return emptyExtraction(system);
+  return {output:{supported:true,sentence_ids:[1]}};
+ },()=>false,['Fear'],{Fear:10,Trust:90});
+ assert.equal(result.causes[0].topic,'看不到周圍環境');
+ assert.equal(result.causes[0].evidence,raw);
+});
+
+test('rejecting an invented cause label preserves explicit feelings without inventing a stressor',async()=>{
+ const raw='我安慰朋友後，她放鬆了。但是我自己的難過沒有改善。';
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('難過','Sadness','continued');
+  if(payload.source_quote)return {output:{topic:'安慰朋友',cause_clause_ids:[1,2,3]}};
+  if(payload.quote&&payload.explanation)return {output:{supported:!payload.explanation.startsWith('安慰朋友：')}};
+  if(system.includes('辨識一筆調適行動'))return emptyExtraction(system);
+  return {output:{supported:true,sentence_ids:[2]}};
+ },()=>false,['Sadness'],{Sadness:100});
+ assert.equal(result.emotion_sources[0].emotion,'Sadness');
+ assert.equal(result.emotion_sources[0].evidence,raw);
+ assert.deepEqual(result.causes,[]);
 });

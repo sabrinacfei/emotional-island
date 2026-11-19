@@ -7,3 +7,11 @@ export function percentageScores(scores: Record<string, number> = {}): Record<st
     && total > 0 && total <= 1.0001;
   return probabilities ? Object.fromEntries(Object.entries(scores).map(([key, value]) => [key, Math.round(value * 100)])) : scores;
 }
+
+/** Preserve native ordering when integer chart percentages round to a tie. */
+export function rankedEmotionScores(scores: Record<string, number> = {}, probabilities: Record<string, number> = {}, limit = 3) {
+  return Object.entries(percentageScores(scores))
+    .filter(([, value]) => value > 0)
+    .sort((a, b) => (probabilities[b[0]] ?? b[1]) - (probabilities[a[0]] ?? a[1]))
+    .slice(0, limit);
+}

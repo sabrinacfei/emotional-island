@@ -16,10 +16,10 @@ import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CLOUD_API_URL, syncPhoneFeedback, saveFragmentOriginal, getMobile, post } from './src/onDevice/cloudClient';
-import { classifyOnPhone } from './src/onDevice/modernbert/runtime';
+import { classifyOnPhone } from './src/onDevice/services';
 import { runLocalFeedback, runImmediateSupport, type LocalFeedback } from './src/onDevice/localFeedback';
 import { trendPaths, type WeekDay, type WeekReview } from './src/onDevice/weekly';
-import { percentageScores } from './src/onDevice/emotionScores';
+import { percentageScores, rankedEmotionScores } from './src/onDevice/emotionScores';
 import { completeDiaryExcerpts, emotionEvidence, isSourceExplanation } from './src/onDevice/emotionEvidence';
 import { FeedbackTouchable as TouchableOpacity, InteractionFeedbackProvider, selectionFeedback, useInteractionFeedback } from './src/ui/InteractionFeedback';
 import { Alert, DismissibleModal, NoticeProvider } from './src/ui/Overlay';
@@ -230,43 +230,15 @@ function toTreeRecord(d: any): TreeRecord {
   };
 }
 
-function getTopEmotions(scores: Record<string, number> = {}, limit = 3) {
-  const ns = norm(scores);
-  return Object.entries(ns)
-    .sort((a, b) => (b[1] || 0) - (a[1] || 0))
-    .filter(([, v]) => v > 0)
-    .slice(0, limit);
+function getTopEmotions(scores: Record<string, number> = {}, limit = 3, raw?: any) {
+  return rankedEmotionScores(scores, raw?.neural_prior?.probabilities || raw?.classifier_analysis?.probabilities || {}, limit);
 }
 
 // 對齊 HTML getEmoSource：根據 EMO_SRC 取對應 tag 的說明
 function getEmoSource(raw: any, key: string, scoreVal: number): string {
-  if (!raw || scoreVal === 0) {
-    return `這筆紀錄尚未產生${EC[key]?.l || key}的具體原因。`;
-  }
-  const verified = emotionEvidence(raw, key);
-  if (verified.length) return Array.from(new Set(verified.map(source => source.explanation))).join('\n\n');
-  if (Array.isArray(raw.emotion_sources) || Array.isArray(raw.causes)) {
-    return `${scoreVal}% 是模型對這篇文字的分類比例。這個分類目前缺少能確認${EC[key]?.l || key}的日記依據，可查看原文核對。`;
-  }
-  const savedReason = raw.emotion_reasons?.[key] || raw.emotionReasons?.[key];
-  if (isSourceExplanation(savedReason)) return savedReason;
-  const cats = EMO_SRC[key] || ['st'];
-  const lines: string[] = [];
-  cats.forEach(c => {
-    const list: any[] = c === 'st' ? (raw.st || raw.stressor_tags || [])
-                       : c === 'bt' ? (raw.bt || raw.buffer_tags || [])
-                       :              (raw.jt || raw.joy_tags || []);
-    list.filter((t: any) => (t.t || t.tag) !== 'none' && (t.r || t.reason || t.text || t.label)).forEach((t: any) => lines.push(t.r || t.reason || t.text || t.label));
-  });
-  if (!lines.length) {
-    const all = [
-      ...(raw.st || []), ...(raw.bt || []), ...(raw.jt || []),
-    ].filter((t: any) => (t.t || t.tag) !== 'none' && (t.r || t.reason || t.text || t.label)).map((t: any) => t.r || t.reason || t.text || t.label);
-    return all.length
-      ? all.join('；也因為') + '，共同影響了今天的情緒。'
-      : `這筆紀錄尚未產生${EC[key]?.l || key}的具體原因。`;
-  }
-  return lines.join('；也因為') + '。';
+  const verified=emotionEvidence(raw,key);
+  if(verified.length)return Array.from(new Set(verified.map(source=>source.explanation))).join('\n\n');
+  return `${scoreVal}% 是模型對文字的估計比例，目前尚無經確認的中文原文依據，不能據此確認你有這個情緒。`;
 }
 
 function emotionTagsFromResult(result: any) {
@@ -573,7 +545,8 @@ function EmotionBarChart({ scores, raw }: BarChartProps) {
   const [popup, setPopup] = useState<{ key: string; text: string; showOriginal: boolean } | null>(null);
   const dailyText = raw?.final_content || raw?.daily_content || raw?.dailyContent || '';
   const excerpts = popup ? completeDiaryExcerpts(dailyText,
-    emotionEvidence(raw, popup.key).map(source => source.evidence || '')) : [];
+    emotionEvidence(raw, popup.key).flatMap(source => [source.evidence || '', ...(source.additional_evidence || [])])) : [];
+  const copingNotes = popup ? emotionEvidence(raw, popup.key).map(source => source.coping_note).filter(isSourceExplanation) : [];
 
   const chartW = 560;
   const chartH = 286;
@@ -670,6 +643,7 @@ function EmotionBarChart({ scores, raw }: BarChartProps) {
       </ScrollView>
 
       <Text style={s.chartHint}>點擊柱狀圖查看情緒來源</Text>
+      <Text style={[s.mini,{textAlign:'center',marginTop:8}]}>比例為模型估計；缺少原文依據的項目會標示未確認。</Text>
 
       <DismissibleModal visible={!!popup} onClose={() => setPopup(null)} overlayStyle={s.noticeOverlay}>
         {popup && <View onStartShouldSetResponder={() => true}
@@ -689,14 +663,21 @@ function EmotionBarChart({ scores, raw }: BarChartProps) {
               {excerpts.map((excerpt, index) => (
                 <Text key={index} selectable style={[s.emoPopupBody, { marginBottom: 14 }]}>{excerpt}</Text>
               ))}
-            </> : <Text style={s.emoPopupBody}>{popup.text}</Text>}
+            </> : <>
+              <Text style={[s.label, { marginBottom: 8 }]}>{emotionEvidence(raw,popup.key).length ? '可能原因' : '模型估計、未確認'}</Text>
+              <Text style={s.emoPopupBody}>{popup.text}</Text>
+              {copingNotes.length > 0 && <>
+                <Text style={[s.label, { marginTop: 18, marginBottom: 8 }]}>補充說明</Text>
+                {copingNotes.map((note, index) => <Text key={index} style={s.emoPopupBody}>{note}</Text>)}
+              </>}
+            </>}
           </ScrollView>
-          <TouchableOpacity testID="emotion-original-toggle" style={{ paddingTop: 12 }}
+          {excerpts.length>0 && <TouchableOpacity testID="emotion-original-toggle" style={{ paddingTop: 12 }}
             onPress={() => setPopup({ ...popup, showOriginal: !popup.showOriginal })}>
             <Text style={[s.body, { color: C.accent, fontFamily: FONT_BOLD }]}>
               {popup.showOriginal ? '‹ 返回情緒原因' : '查看日記原文 >'}
             </Text>
-          </TouchableOpacity>
+          </TouchableOpacity>}
         </View>}
       </DismissibleModal>
     </View>
@@ -1751,7 +1732,7 @@ function DayTreeScreen({ navigation, route }: any) {
   const mood = rec?.mood || 'Joy';
   const treeInfo = MOOD_TREE[mood] || MOOD_TREE.Joy;
   const scores = norm(rec?.scores || {});
-  const top = getTopEmotions(scores, 1)[0];
+  const top = getTopEmotions(scores, 1, rec?.raw)[0];
   const topKey = top?.[0] || mood;
   const topVal = top?.[1] || scores[mood] || 0;
   const dailyText = rec?.raw?.daily_content || rec?.raw?.dailyContent || rec?.raw?.final_content || rec?.raw?.daily_summary || rec?.summary || '';
@@ -1866,10 +1847,10 @@ function DayAnalysisScreen({ navigation, route }: any) {
   const dominantMood = rec?.mood || 'Joy';
   const treeInfo = MOOD_TREE[dominantMood] || MOOD_TREE.Joy;
   const scores = norm(rec?.scores || {});
-  const top = getTopEmotions(scores, 3);
+  const top = getTopEmotions(scores, 3, rec?.raw);
   const dailyContent = rec?.raw?.final_content || rec?.raw?.daily_content || rec?.raw?.dailyContent;
   const canRefreshSources = rec?.raw?.processing_mode === 'phone_slm_v1' && rec.raw.classification_available === true
-    && rec.raw.risk_level !== 'high' && dailyContent && rec.raw.source_analysis_version !== 'emotion-evidence-v2';
+    && rec.raw.risk_level !== 'high' && dailyContent && rec.raw.source_analysis_version !== 'emotion-evidence-v4';
 
   const refreshSources = async () => {
     if (!rec || !canRefreshSources || refreshingSources) return;
@@ -1903,7 +1884,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
             <Text style={[s.label, { fontSize: 20, lineHeight: 30 }]}>主要情緒</Text>
             {top.map(([k, v]) => (
               <Text key={k} style={[s.body, { color: EC[k]?.c || C.text, fontSize: 19, lineHeight: 31 }]}>
-                {EC[k]?.l || k}　{v}%
+                {EC[k]?.l || k}　{v}%{!emotionEvidence(rec?.raw,k).length ? '（未確認）' : ''}
               </Text>
             ))}
           </View>
@@ -2163,7 +2144,9 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
       const entry = pending.find(saved => saved.kind === 'daily' && saved.date === date && saved.content === confirmed.final_content)
         ?? newPhoneDiary(username, confirmed.final_content, 'daily', date);
       await savePhoneDiary(entry);
-      const feedback = entry.result && entry.result.status !== 'unavailable'
+      const feedback = entry.result && (entry.result.status === 'local_safety'
+        || (entry.result.status === 'completed' && entry.result.classification_translation?.version === 'zh-en-faithful-v1'
+          && entry.result.source_analysis_version === 'emotion-evidence-v4'))
         ? entry.result : await runLocalFeedback(entry.content, classifyOnPhone, phoneSLM, setProgress);
       const saved: PhoneDiary = { ...entry, result: feedback, syncStatus: 'pending' };
       await savePhoneDiary(saved);

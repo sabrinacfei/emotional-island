@@ -98,3 +98,52 @@ class PhoneClassifierTests(unittest.TestCase):
         self.assertEqual(TestClient(app).post('/mobile/emotions/on-device',json={'content':TEXT,'classification':fixture()}).status_code,422)
 
 if __name__=='__main__':unittest.main()
+
+class TranslatedClassificationTests(unittest.TestCase):
+    def translation(self):
+        from mobile_feedback import PHONE_SLM_DIGESTS
+        model='qwen3.5-4b-q4_k_m'
+        return dict(version='zh-en-faithful-v1',target_language='en',model=model,model_sha256=PHONE_SLM_DIGESTS[model],
+                    text='I am happy after finishing my report, but worried about tomorrow.',
+                    segments=[dict(source=TEXT,english='I am happy after finishing my report, but worried about tomorrow.')])
+
+    def test_registration_binds_english_classifier_trace_and_original_chinese_diary(self):
+        from mobile_feedback import ClassificationTranslation
+        source=self.translation(); ClassificationTranslation(**source).verify_source(TEXT)
+        data=fixture(); data['trace']['input_sha256']=digest(source['text'])
+        app=FastAPI();app.include_router(router(lambda:'synthetic-user',AsyncMock(),'synthetic-test-secret-only'))
+        client=TestClient(app)
+        body=dict(content=TEXT,date_label='2026-11-08',classification=data,translation=source)
+        response=client.post('/mobile/emotions/on-device',json=body)
+        self.assertEqual(response.status_code,200,response.text)
+        import jwt
+        receipt=jwt.decode(response.json()['receipt_token'],'synthetic-test-secret-only',algorithms=['HS256'],audience='phone-emotions-v1')
+        self.assertEqual(receipt['input_sha256'],digest(TEXT))
+        self.assertEqual(receipt['classifier_trace']['input_sha256'],digest(source['text']))
+        self.assertEqual(receipt['classification_translation'],source)
+        for field in ['text','source','hash']:
+            import copy
+            bad=copy.deepcopy(body)
+            if field=='text':bad['translation']['text']+=' changed'
+            if field=='source':bad['translation']['segments'][0]['source']='別人的日記'
+            if field=='hash':bad['classification']['trace']['input_sha256']=digest(TEXT)
+            self.assertEqual(client.post('/mobile/emotions/on-device',json=bad).status_code,422)
+
+    def test_translated_commit_requires_supported_chinese_primary_and_keeps_translation(self):
+        from test_mobile_feedback import TRACE,CONTEXT
+        source=self.translation();data=fixture();data['trace']['input_sha256']=digest(source['text'])
+        save=AsyncMock(return_value={"synced":True})
+        app=FastAPI();app.include_router(router(lambda:'synthetic-user',save,'synthetic-test-secret-only'))
+        client=TestClient(app)
+        receipt=client.post('/mobile/emotions/on-device',json=dict(content=TEXT,date_label='2026-11-08',classification=data,translation=source)).json()['receipt_token']
+        support=dict(status='completed',comfort='我聽見你的感受。',suggestions=[],blessing='',risk_level='none',response_mode='SUPPORT_MODE',safety_action='none',context=CONTEXT,generation=TRACE,source_analysis_version='emotion-evidence-v4',emotion_sources=[])
+        body=dict(content=TEXT,date_label='2026-11-08',entry_id='translated_daily_123',kind='daily',receipt_token=receipt,support=support)
+        self.assertEqual(client.post('/mobile/diaries',json=body).status_code,422)
+        save.assert_not_called()
+        dominant=max(data['analysis']['probabilities'],key=data['analysis']['probabilities'].get)
+        support['emotion_sources']=[dict(emotion=dominant,explanation='明天的事情讓我擔心。' if dominant=='Fear' else '完成報告讓我開心。',evidence=TEXT)]
+        self.assertEqual(client.post('/mobile/diaries',json=body).status_code,200)
+        self.assertEqual(save.await_args.args[2]['classification_translation'],source)
+        self.assertEqual(save.await_args.args[2]['scores'],data['analysis']['scores'])
+        support['emotion_sources'][0].update(coping_note='戴耳機仍無法專心。',additional_evidence=['原文沒有的句子。'])
+        self.assertEqual(client.post('/mobile/diaries',json=body).status_code,422)

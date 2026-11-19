@@ -1,3 +1,5 @@
+import type { ClassificationTranslation } from './classificationTranslation';
+import { isSourceExplanation } from './emotionEvidence';
 import { decision, ruleRisk, validateScores, EMOTIONS, type Scores, type Risk, type Context, type Decision } from './flow';
 import { PHONE_MODELS, type PhoneModel, type PhoneModelId } from './qwen/config';
 
@@ -6,12 +8,13 @@ export type ClassifierAnalysis = { probabilities: Scores; top_3: Array<{ emotion
 export type ClassifierReply = { scores: Scores | null; receipt_token: string | null; risk_floor: Risk; backend: 'modernbert'; classification_available: boolean; analysis: ClassifierAnalysis | null };
 export type ClassifierTrace = { execution: 'on-device'; runtime: 'coreml'; model: string; model_sha256: string;
   tokenizer_sha256: string; input_sha256: string; duration_ms: number; load_ms: number };
-export type PhoneClassifierReply = ClassifierReply & { classifier_trace?: ClassifierTrace };
+export type PhoneClassifierReply = ClassifierReply & { classifier_trace?: ClassifierTrace; classification_translation?: ClassificationTranslation };
 export type ContextAssessment = { risk_level: Risk; risk_evidence: string[]; context: Context; support_style: 'listening' | 'suggestions' | 'unspecified' };
 export type Support = { comfort: string; suggestions: string[]; blessing: string };
 export type EmotionCause = { type: 'stressor' | 'buffer' | 'joy'; topic: string; explanation: string; evidence: string; emotions: string[] };
-export type EmotionSource = { emotion: string; explanation: string; evidence: string };
-export type DailySources = { causes: EmotionCause[]; emotion_sources?: EmotionSource[]; source_analysis_version?: 'emotion-evidence-v2' };
+export type EmotionSource = { emotion: string; explanation: string; evidence: string;
+  coping_note?: string; additional_evidence?: string[] };
+export type DailySources = { causes: EmotionCause[]; emotion_sources?: EmotionSource[]; source_analysis_version?: 'emotion-evidence-v2' | 'emotion-evidence-v3' | 'emotion-evidence-v4' };
 export type GenerationTrace = { execution: 'on-device'; runtime: string; model: PhoneModelId; sha256: string;
   tokens_predicted: number; duration_ms: number; tokens_per_second: number | null; stopped_eos: boolean; raw_text: string };
 export type SLMRun = { output: unknown; trace: GenerationTrace };
@@ -23,15 +26,21 @@ export type LocalFeedback = Support & Decision & {
   generation: GenerationTrace | null;
   classifier_analysis: ClassifierAnalysis | null;
   classifier_trace?: ClassifierTrace;
+  classification_translation?: ClassificationTranslation;
   causes?: EmotionCause[];
   emotion_sources?: EmotionSource[];
-  source_analysis_version?: 'emotion-evidence-v2';
+  source_analysis_version?: 'emotion-evidence-v2' | 'emotion-evidence-v3' | 'emotion-evidence-v4';
   failure_stage?: 'classification' | 'assessment' | 'assessment_validation' | 'support' | 'support_validation' | 'causes' | 'causes_validation';
 };
 export interface PhoneSLM {
   assess(input: { diary: string; emotion_scores?: Scores; emotion_probabilities?: Scores; safety: Decision }): Promise<SLMRun>;
   respond(input: { diary: string; emotion_scores?: Scores; emotion_probabilities?: Scores; assessment: ContextAssessment; safety: Decision }): Promise<SLMRun>;
-  causes?(input: { diary: string; emotion_probabilities: Scores }): Promise<{ output: unknown }>;
+  causes?(input: { diary: string; emotion_probabilities: Scores; emotion_scores?: Scores }): Promise<{ output: unknown }>;
+}
+
+export function causeCategoryMatches(type: EmotionCause['type'], emotions: string[]): boolean {
+  return type === 'stressor' ? emotions.some(emotion => ['Anger', 'Disgust', 'Fear', 'Sadness'].includes(emotion))
+    : type === 'joy' ? emotions.some(emotion => ['Joy', 'Anticipation'].includes(emotion)) : true;
 }
 
 export function parseCauses(input: unknown, diary: string): EmotionCause[] {
@@ -39,9 +48,10 @@ export function parseCauses(input: unknown, diary: string): EmotionCause[] {
   if (!v || Object.keys(v).join() !== 'causes' || !Array.isArray(v.causes) || v.causes.length > 3) throw new Error('Invalid causes');
   return v.causes.map(c => {
     if (Object.keys(c).sort().join() !== 'emotions,evidence,explanation,topic,type' || !['stressor', 'buffer', 'joy'].includes(c.type)
-      || !Array.isArray(c.emotions) || !c.emotions.length || c.emotions.length > 3 || c.emotions.some(k => !EMOTIONS.includes(k as any))
-      || typeof c.evidence !== 'string' || c.evidence.length < 2 || !diary.includes(c.evidence)) throw new Error('Unverifiable cause');
-    return { ...c, topic: text(c.topic, 40), explanation: text(c.explanation, 180), evidence: text(c.evidence, 160) };
+      || !Array.isArray(c.emotions) || (!c.emotions.length && c.type !== 'buffer') || c.emotions.length > 3 || c.emotions.some(k => !EMOTIONS.includes(k as any))
+      || !causeCategoryMatches(c.type, c.emotions)
+      || !isSourceExplanation(c.explanation) || typeof c.evidence !== 'string' || c.evidence.length < 2 || !diary.includes(c.evidence)) throw new Error('Unverifiable cause');
+    return { ...c, topic: text(c.topic, 40), explanation: text(c.explanation, 180), evidence: text(c.evidence, 600) };
   });
 }
 
@@ -52,13 +62,19 @@ export function parseDailySources(input: unknown, diary: string): DailySources {
   if (!Array.isArray(value.emotion_sources) || value.emotion_sources.length > EMOTIONS.length) throw new Error('Invalid emotion sources');
   const seen = new Set<string>();
   const emotion_sources = value.emotion_sources.map(source => {
-    const evidence = text(source?.evidence, 160);
+    const evidence = text(source?.evidence, 600);
     if (!EMOTIONS.some(emotion => emotion === source.emotion)
-      || seen.has(source.emotion) || evidence.length < 2 || !diary.includes(evidence)) throw new Error('Unverifiable emotion source');
+      || !isSourceExplanation(source.explanation) || seen.has(source.emotion) || evidence.length < 2 || !diary.includes(evidence)) throw new Error('Unverifiable emotion source');
     seen.add(source.emotion);
-    return { emotion: source.emotion, explanation: text(source.explanation, 180), evidence };
+    const note = source.coping_note === undefined ? undefined : text(source.coping_note, 180);
+    if (note && !isSourceExplanation(note)) throw new Error('Invalid coping note');
+    if (source.additional_evidence !== undefined && (!Array.isArray(source.additional_evidence) || source.additional_evidence.length > 2
+      || source.additional_evidence.some(quote => typeof quote !== 'string' || quote.trim().length < 2 || quote.length > 600 || !diary.includes(quote)))) throw new Error('Unverifiable related evidence');
+    if (note && !source.additional_evidence?.length) throw new Error('Missing coping outcome evidence');
+    return { emotion: source.emotion, explanation: text(source.explanation, 180), evidence,
+      ...(note ? { coping_note: note } : {}), ...(source.additional_evidence?.length ? { additional_evidence: source.additional_evidence } : {}) };
   });
-  return { causes, emotion_sources, ...(value.source_analysis_version === 'emotion-evidence-v2' ? { source_analysis_version: value.source_analysis_version } : {}) };
+  return { causes, emotion_sources, ...(['emotion-evidence-v2', 'emotion-evidence-v3', 'emotion-evidence-v4'].includes(value.source_analysis_version ?? '') ? { source_analysis_version: value.source_analysis_version } : {}) };
 }
 
 const contextKeys = ['event_context', 'emotional_context', 'main_concern', 'coping_already_tried', 'support_preference'] as const;
@@ -104,18 +120,20 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
   let scores: Scores | null = null, receipt: string | null = null;
   let analysis: ClassifierAnalysis | null = null;
   let classifierTrace: ClassifierTrace | undefined;
+  let classificationTranslation: ClassificationTranslation | undefined;
   let generation: GenerationTrace | null = null;
   let stage: NonNullable<LocalFeedback['failure_stage']> = 'classification';
   let safety: Decision = decision('none');
   const base = () => ({ ...safety, scores, receipt_token: receipt, classification_available: scores !== null, classifier_analysis: analysis, generation,
-    ...(classifierTrace ? { classifier_trace: classifierTrace } : {}) });
+    ...(classifierTrace ? { classifier_trace: classifierTrace } : {}),
+    ...(classificationTranslation ? { classification_translation: classificationTranslation } : {}) });
   try {
     if (!diary.trim() || diary.length > 12000) throw new Error('Invalid diary');
     progress('正在檢查安全訊號');
     safety = decision(ruleRisk(diary));
     if (safety.risk_level === 'high') return { ...base(), ...fixedSafety(safety), inference_source: 'fixed-safety', status: 'local_safety', safety_check_status: 'screened', context: null };
     if (!immediate) {
-    progress('正在分析日記情緒');
+    progress('正在翻譯英文分類輸入並分析情緒');
     const classified = await classify(diary);
     if (classified.backend !== 'modernbert') throw new Error('Unexpected classifier');
     safety = decision(safety.risk_level, classified.risk_floor);
@@ -126,6 +144,7 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
       || !Number.isFinite(trace.duration_ms) || trace.duration_ms <= 0)) throw new Error('Invalid native classifier trace');
     if (!classified.classification_available || (!classified.receipt_token && !trace)) throw new Error('Classifier unavailable');
     classifierTrace = trace;
+    classificationTranslation = classified.classification_translation;
     scores = validateScores(classified.scores as Scores); receipt = classified.receipt_token;
     analysis = classified.analysis;
     const p = analysis?.probabilities;
@@ -153,9 +172,18 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
     if (!immediate && slm.causes && analysis) {
       stage = 'causes';
       progress('正在手機整理情緒成因');
-      const found = await slm.causes({ diary, emotion_probabilities: analysis.probabilities });
+      const found = await slm.causes({ diary, emotion_probabilities: analysis.probabilities, emotion_scores: scores! });
       stage = 'causes_validation';
       sources = parseDailySources(found.output, diary);
+    }
+    if (classificationTranslation && analysis) {
+      stage = 'causes_validation';
+      const dominant = analysis.top_3?.[0]?.emotion
+        ?? EMOTIONS.reduce((best, emotion) => analysis!.probabilities[emotion] > analysis!.probabilities[best] ? emotion : best);
+      if (sources.source_analysis_version !== 'emotion-evidence-v4'
+        || !sources.emotion_sources?.some(source => source.emotion === dominant)) {
+        throw new Error('Dominant classification lacks supporting Chinese evidence');
+      }
     }
     return { ...base(), ...support, ...sources, inference_source: model.inferenceSource, status: 'completed', safety_check_status: 'screened', context: assessment.context };
   } catch (error) {

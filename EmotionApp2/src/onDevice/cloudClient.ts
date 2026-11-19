@@ -27,7 +27,8 @@ export async function syncPhoneFeedback(base: string, token: string, entry: { id
   let receipt = result.receipt_token;
   if (entry.kind === 'daily' && result.status === 'completed' && result.classifier_trace) {
     const registered = await post(base, '/mobile/emotions/on-device', token, { content: entry.content, date_label: entry.date,
-      classification: { trace: result.classifier_trace, analysis: result.classifier_analysis } });
+      classification: { trace: result.classifier_trace, analysis: result.classifier_analysis },
+      translation: result.classification_translation });
     if (!registered.classification_available || !registered.receipt_token) throw new Error('本機結果已保留，雲端尚未接受本次同步。');
     if (Object.entries(result.scores ?? {}).some(([key,value]) => registered.scores?.[key] !== value)) throw new Error('本機與同步紀錄不一致，結果已保留供重試。');
     receipt = registered.receipt_token;

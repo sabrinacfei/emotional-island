@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import hmac
 import math
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -14,6 +15,9 @@ from slm_schemas import Emotion, Scores
 from safety_policy import decide
 from safety_rules import detect_safety_risk
 from modernbert_chunking import LABELS
+
+
+UNSUPPORTED_SOURCE = re.compile(r"(?:略過|跳過)(?:此|該|這個)?(?:情緒|類別|分類)|(?:未找到|沒有|無)(?:足夠|明確|直接|相關|任何|對應)?的?(?:原文|日記|情緒|壓力|快樂|緩衝)?(?:線索|證據|依據|來源|相關事件)|無相關事件|無法建立(?:對應)?依據|不足以(?:判斷|支持)(?:該|此|這個)?情緒|(?:故|因此)(?:略過|跳過)[。.!！\s]*$")
 
 
 PHONE_SLM_DIGESTS = {
@@ -28,8 +32,32 @@ class Input(BaseModel):
     date_label: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
+class TranslationSegment(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    source: str = Field(min_length=1, max_length=12000)
+    english: str = Field(min_length=1, max_length=12000)
+
+
+class ClassificationTranslation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: Literal["zh-en-faithful-v1"]
+    target_language: Literal["en"]
+    text: str = Field(min_length=1, max_length=48000)
+    segments: list[TranslationSegment] = Field(min_length=1, max_length=512)
+    model: str
+    model_sha256: str
+
+    def verify_source(self, content: str):
+        if (PHONE_SLM_DIGESTS.get(self.model) != self.model_sha256
+                or "".join(item.source for item in self.segments) != content
+                or "\n\n".join(item.english for item in self.segments) != self.text
+                or not re.search(r"[A-Za-z]{2}", self.text)):
+            raise ValueError("Translation does not match original diary/model")
+
+
 class PhoneClassificationInput(Input):
     classification: dict
+    translation: ClassificationTranslation | None = None
 
 
 class NativeGeneration(BaseModel):
@@ -60,30 +88,57 @@ class Cause(BaseModel):
     type: Literal["stressor", "buffer", "joy"]
     topic: str = Field(min_length=1, max_length=40)
     explanation: str = Field(min_length=1, max_length=180)
-    evidence: str = Field(min_length=2, max_length=160)
-    emotions: list[Emotion] = Field(min_length=1, max_length=3)
+    evidence: str = Field(min_length=2, max_length=600)
+    emotions: list[Emotion] = Field(max_length=3)
+
+    @model_validator(mode="after")
+    def validate_emotion_binding(self):
+        # Relaxation can be real without proving one of the eight emotions.
+        if self.type != "buffer" and not self.emotions:
+            raise ValueError("Emotion events require an emotion binding")
+        return self
 
 
 class EmotionSource(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     emotion: Emotion
     explanation: str = Field(min_length=1, max_length=180)
-    evidence: str = Field(min_length=2, max_length=160)
+    evidence: str = Field(min_length=2, max_length=600)
+    coping_note: str | None = Field(default=None, min_length=1, max_length=180)
+    additional_evidence: list[str] = Field(default_factory=list, max_length=2)
 
 
 class SourceDetails(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     causes: list[Cause] = Field(default_factory=list, max_length=3)
     emotion_sources: list[EmotionSource] | None = Field(default=None, max_length=8)
-    source_analysis_version: Literal["emotion-evidence-v2"] | None = None
+    source_analysis_version: Literal["emotion-evidence-v2", "emotion-evidence-v3", "emotion-evidence-v4"] | None = None
 
     def verify_evidence(self, content: str):
+        for source in self.emotion_sources or []:
+            if ((source.coping_note and (not source.additional_evidence or UNSUPPORTED_SOURCE.search(source.coping_note)))
+                or any(not 2 <= len(quote.strip()) <= 600 or quote not in content for quote in source.additional_evidence)):
+                raise HTTPException(422, "調適補充說明缺少可核對的中文原文。")
+        if self.source_analysis_version in {"emotion-evidence-v3", "emotion-evidence-v4"} and any(
+            (item.type == "joy" and not set(item.emotions) & {"Joy", "Anticipation"})
+            or (item.type == "stressor" and not set(item.emotions) & {"Anger", "Disgust", "Fear", "Sadness"})
+            for item in self.causes
+        ):
+            raise HTTPException(422, "事件類別與情緒來源不一致。")
         items = self.emotion_sources or []
         if len({item.emotion for item in items}) != len(items) or any(
-            not item.explanation.strip() or not item.evidence.strip() or item.evidence not in content
+            not item.explanation.strip() or re.fullmatch(r"(?:無|无|沒有|没有|不適用|不适用|略過|跳過|none|null|n/?a)[。.!！\s]*", item.explanation.strip(), re.I)
+            or UNSUPPORTED_SOURCE.search(item.explanation)
+            or not item.evidence.strip() or item.evidence not in content
             for item in [*self.causes, *items]
         ):
             raise HTTPException(422, "情緒來源缺少可核對的原文依據。")
+
+
+def ranked_emotions(scores: dict, analysis: dict | None = None) -> list[str]:
+    """Rank native probabilities before percentage rounding; legacy scores remain supported."""
+    probabilities = (analysis or {}).get("probabilities") or {}
+    return sorted(scores, key=lambda emotion: probabilities.get(emotion, scores[emotion]), reverse=True)
 
 
 def daily_source_fields(causes: list[dict], emotion_sources: list[dict] | None, source_analysis_version: str | None = None) -> dict:
@@ -140,7 +195,10 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
             return {"backend":"modernbert","classification_available":False,"scores":None,"receipt_token":None,"risk_floor":"high"}
         try:
             from phone_classifier import validate_phone_classification
-            result,trace=validate_phone_classification(data.classification,digest(data.content))
+            if data.translation:
+                data.translation.verify_source(data.content)
+            classifier_text = data.translation.text if data.translation else data.content
+            result,trace=validate_phone_classification(data.classification,digest(classifier_text))
         except (ValueError,KeyError,TypeError,FileNotFoundError):
             raise HTTPException(422, "手機分類紀錄與定稿內容或模型版本不符。") from None
         analysis={k:result[k] for k in ("probabilities","top_3","labels","token_count","chunk_count","chunks","aggregation","truncated")}
@@ -149,7 +207,7 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
             "iat":now,"date_label":data.date_label,"final_revision":revision,"input_sha256":digest(data.content),
             "scores":result['scores'],"risk_floor":floor,"classifier":"modernbert-lora","analysis":analysis,
             "classifier_execution":"on-device","classifier_provenance":"client_reported_native_classifier",
-            "classifier_trace":trace},secret,algorithm='HS256')
+            "classifier_trace":trace,"classification_translation":data.translation.model_dump() if data.translation else None},secret,algorithm='HS256')
         return {"backend":"modernbert","classification_available":True,"scores":result['scores'],"analysis":analysis,
                 "receipt_token":receipt,"risk_floor":floor,"classifier_execution":"on-device","classifier_trace":trace}
     @api.post("/emotions")
@@ -194,6 +252,7 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
         classifier_execution = None
         classifier_trace = None
         classifier_provenance = None
+        classification_translation = None
         if data.kind == "fragment" and data.receipt_token:
             raise HTTPException(422, "小日記不接受正式分類結果。")
         if data.kind == "daily" and require_final:
@@ -209,6 +268,7 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
                 analysis = receipt["analysis"]
                 classifier_execution = receipt.get("classifier_execution", "cloud")
                 classifier_trace = receipt.get("classifier_trace")
+                classification_translation = receipt.get("classification_translation")
                 classifier_provenance = receipt.get("classifier_provenance", "server_executed_classifier")
                 if sum(scores.values()) != 100:
                     raise ValueError("Invalid classifier distribution")
@@ -232,7 +292,13 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
         if (data.kind == "fragment" or route.risk_level == "high") and (data.support.causes or data.support.emotion_sources):
             raise HTTPException(422, "此紀錄不接受正式情緒成因。")
         data.support.verify_evidence(data.content)
+        if classification_translation and analysis:
+            dominant = max(analysis["probabilities"], key=analysis["probabilities"].get)
+            if data.support.source_analysis_version != "emotion-evidence-v4" or not any(source.emotion == dominant for source in data.support.emotion_sources or []):
+                raise HTTPException(422, "主要分類情緒尚無中文原文支持，請重新核對分析。")
         support = data.support.model_dump()
+        if data.support.emotion_sources is not None:
+            support["emotion_sources"] = [source.model_dump(exclude_none=True, exclude_defaults=True) for source in data.support.emotion_sources]
         if route.risk_level == "high":
             # Fixed server copy as well: do not persist arbitrary high-risk free generation.
             support.update(comfort="現在先以你的安全為優先。若有立即危險，請聯絡當地緊急服務，並請可信任的人陪伴你尋求專業協助。",
@@ -243,7 +309,7 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
                   "inference_provenance": "client_reported_native_trace" if data.support.generation else "fixed_template",
                   "classifier_source": "modernbert-lora" if scores else None, "classifier_analysis": analysis,
                   "classifier_execution":classifier_execution,"classifier_trace":classifier_trace,
-                  "classifier_provenance":classifier_provenance}
+                  "classifier_provenance":classifier_provenance,"classification_translation":classification_translation}
         return await save_entry(uid, data, result)
 
     return api

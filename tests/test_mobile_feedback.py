@@ -152,3 +152,37 @@ class MobileApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SourceGuardTests(unittest.TestCase):
+    def test_denials_are_not_accepted_as_supporting_evidence(self):
+        from mobile_feedback import SourceDetails
+        for explanation in ['無相關事件引發開心，無法建立對應依據。', '沒有足夠線索。', '未找到信任的來源，故略過。']:
+            details = SourceDetails(emotion_sources=[dict(emotion='Joy', explanation=explanation, evidence=RAW[:8])])
+            with self.assertRaises(HTTPException):
+                details.verify_evidence(RAW)
+
+    def test_actual_reason_and_exact_quote_are_accepted(self):
+        from mobile_feedback import SourceDetails
+        details = SourceDetails(emotion_sources=[dict(emotion='Sadness', explanation='報告受批評讓我委屈。', evidence='覺得有點委屈')])
+        details.verify_evidence(RAW)
+
+class EmotionRankingTests(unittest.TestCase):
+    def test_native_probabilities_determine_order_before_rounding(self):
+        from mobile_feedback import ranked_emotions
+        scores={"Anger":34,"Sadness":34,"Joy":0}
+        self.assertEqual(ranked_emotions(scores,{"probabilities":{"Anger":.34152,"Sadness":.34172,"Joy":.0001}})[0],"Sadness")
+        self.assertEqual(ranked_emotions({"Anger":40,"Sadness":60})[0],"Sadness")
+
+class RelaxationBindingTests(unittest.TestCase):
+    def test_actual_relaxation_need_not_invent_joy_or_trust(self):
+        from mobile_feedback import SourceDetails, daily_source_fields
+        text='朋友陪我散步後，我慢慢放鬆了。'
+        cause=dict(type='buffer',topic='散步',explanation=text,evidence=text,emotions=[])
+        details=SourceDetails(causes=[cause],emotion_sources=[],source_analysis_version='emotion-evidence-v4')
+        details.verify_evidence(text)
+        fields=daily_source_fields([cause],[],'emotion-evidence-v4')
+        self.assertEqual(fields['emotion_reasons'],{})
+        self.assertEqual(fields['buffer_tags'][0]['evidence'],text)
+        for kind in ['stressor','joy']:
+            with self.assertRaises(ValueError):
+                SourceDetails(causes=[{**cause,'type':kind}])

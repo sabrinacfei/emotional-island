@@ -21,7 +21,7 @@ import urllib.request
 import urllib.error
 from selfhost_config import load_settings
 from slm_client import SelfHostedGenerationError
-from mobile_feedback import daily_source_fields, router as phone_router
+from mobile_feedback import daily_source_fields, ranked_emotions, router as phone_router
 from mobile_workflow_api import has_classification, router as workflow_router
 from daily_workflow import DailyWorkflow, DEFAULTS as WORKFLOW_DEFAULTS, validate_settings, schedule
 from zoneinfo import ZoneInfo
@@ -1723,7 +1723,7 @@ async def _save_phone_entry(uid, request, result):
         saved = await db.conversations.find_one_and_update({"userId": uid, "mobile_entry_id": request.entry_id}, {"$set": doc}, upsert=True, return_document=ReturnDocument.AFTER)
         return {"synced": True, "entry_id": request.entry_id, "fragmentId": str(saved["_id"])}
     sources = daily_source_fields(result.get("causes", []), result.get("emotion_sources"), result.get("source_analysis_version"))
-    raw_emotion = {"emotions": scores, "dominant_emotions": sorted(scores, key=scores.get, reverse=True)[:3],
+    raw_emotion = {"emotions": scores, "dominant_emotions": ranked_emotions(scores, result.get("classifier_analysis"))[:3],
                    "emotional_intensity": None, "risk_level": result["risk_level"], "response_mode": result["response_mode"],
                    "safety_action": result["safety_action"], "classification_available": result["classification_available"],
                    "safety_check_status": result["safety_check_status"], "safety_decision": result["safety_decision"],

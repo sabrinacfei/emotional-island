@@ -1,6 +1,7 @@
 """Authenticated fragment/draft/final and weekly read APIs. No third-party LLM."""
 from datetime import date, datetime, timedelta, timezone
 import hashlib
+import json
 from bson import ObjectId
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -40,6 +41,7 @@ class ExampleDay(BaseModel):
     fragments: list[str] = Field(min_length=1, max_length=8)
     content: str = Field(min_length=1, max_length=12000)
     restart_from_fragments: bool = False
+    source_revision: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,80}$")
     time_labels: list[str] | None = Field(default=None, max_length=8)
 
 
@@ -102,16 +104,19 @@ def router(db, current_user, serialize):
             raise HTTPException(422, "示範日記內容不完整。")
         existing = await db.conversations.find({"userId": uid, "date_label": day}).to_list(None)
         diary = await db.daily_diaries.find_one({"userId": uid, "date_label": day})
+        if data.source_revision and not data.restart_from_fragments:
+            raise HTTPException(422, "重新整理版本必須從小日記開始。")
         if data.restart_from_fragments:
             if len(data.fragments) < 4 or len(data.fragments) > 6:
                 raise HTTPException(422, "完整示範流程每天需要四至六則小日記。")
-            same_run = diary and diary.get("data_origin") == "generated-example" and diary.get("example_source_contents") == data.fragments
+            same_run = diary and diary.get("data_origin") == "generated-example" and diary.get("example_source_contents") == data.fragments and diary.get("example_source_revision") == data.source_revision
             if not same_run:
                 for collection in ("conversations", "daily_diaries", "emotion_analyses", "emotion_trends"):
                     rows = await db[collection].find({"userId": uid, "date_label": day}).to_list(None)
                     for row in rows:
                         await db.diary_example_archive.update_one(
-                            {"userId": uid, "collection": collection, "originalId": row["_id"]},
+                            {"userId": uid, "collection": collection, "originalId": row["_id"],
+                             "snapshot_version": hashlib.sha256(json.dumps(serialize(row), sort_keys=True, default=str).encode()).hexdigest()},
                             {"$setOnInsert": {"snapshot": row, "archived_at": datetime.now(timezone.utc), "date_label": day}},
                             upsert=True)
                 for collection in ("conversations", "daily_diaries", "emotion_analyses", "emotion_trends"):
@@ -138,7 +143,7 @@ def router(db, current_user, serialize):
         sources = await workflow.sources(uid, day)
         if data.restart_from_fragments:
             await db.daily_diaries.update_one({"userId": uid, "date_label": day},
-                {"$set": {"example_source_contents": data.fragments}})
+                {"$set": {"example_source_contents": data.fragments, "example_source_revision": data.source_revision}})
             saved = await db.daily_diaries.find_one({"userId": uid, "date_label": day})
             return {"daily": serialize(saved), "source_count": len(sources), "data_origin": "generated-example"}
         saved = await workflow.draft(uid, day, data.content, [row["id"] for row in sources], "generated-example")
@@ -198,11 +203,19 @@ def router(db, current_user, serialize):
         record = await db.emotion_analyses.find_one(query)
         if not record:
             raise HTTPException(409, "此日記目前無法補充情緒來源。")
+        if record.get("classification_translation"):
+            probabilities = (record.get("classifier_analysis") or {}).get("probabilities") or record.get("scores") or {}
+            dominant = max(probabilities, key=probabilities.get) if probabilities else None
+            if data.source_analysis_version != "emotion-evidence-v4" or not any(source.emotion == dominant for source in data.emotion_sources):
+                raise HTTPException(422, "主要分類情緒尚無中文原文支持，請重新核對分析。")
         causes = [item.model_dump() for item in data.causes]
-        categories = {item["type"] for item in causes}
-        causes.extend(c for c in record.get("causes", [])
-                      if c["type"] not in categories and c.get("evidence") and c["evidence"] in data.content)
-        fields = daily_source_fields(causes, [item.model_dump() for item in data.emotion_sources], data.source_analysis_version)
+        # Full source rechecks clear stale claims even when a category is empty.
+        # Older clients submit partial additions, so retain their legacy behavior.
+        if data.source_analysis_version not in {"emotion-evidence-v3", "emotion-evidence-v4"}:
+            categories = {item["type"] for item in causes}
+            causes.extend(c for c in record.get("causes", [])
+                          if c["type"] not in categories and c.get("evidence") and c["evidence"] in data.content)
+        fields = daily_source_fields(causes, [item.model_dump(exclude_none=True, exclude_defaults=True) for item in data.emotion_sources], data.source_analysis_version)
         updated = await db.emotion_analyses.find_one_and_update(query, {"$set": fields}, return_document=ReturnDocument.AFTER)
         if not updated:
             raise HTTPException(409, "當日分析已變更，請重新開啟。")

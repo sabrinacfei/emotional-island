@@ -108,6 +108,10 @@ class WorkflowIntegration(unittest.TestCase):
   self.assertEqual(updated['stressor_tags'],history[0]['stressor_tags'])
   self.assertEqual(updated['final_content'],history[0]['final_content'])
   self.assertEqual(updated['scores'],history[0]['scores'])
+  for version in ['emotion-evidence-v3','emotion-evidence-v4']:
+   cleared=self.post(refresh,dict(content=RAW,causes=[],emotion_sources=[source],source_analysis_version=version)).json()
+   self.assertEqual(cleared['stressor_tags'],[])
+   self.assertEqual(cleared['scores'],history[0]['scores'])
  def test_closed_app_has_pending_aggregation_not_fake_generated_draft(self):
   self.fragment()
   for _ in range(2):
@@ -167,5 +171,22 @@ class WorkflowIntegration(unittest.TestCase):
    self.assertEqual(result.status_code,200)
    self.assertEqual(result.json()['daily']['data_origin'],'generated-example')
   self.assertEqual(self.db.conversations.count_documents({'userId':self.uid,'date_label':future}),2)
+
+ def test_explicit_example_revision_restarts_once_and_preserves_each_previous_draft(self):
+  payload=dict(fragments=['早上開心。','中午有點擔心。','下午完成工作。','晚上散步放鬆。'],content='從小日記重新整理',restart_from_fragments=True,source_revision='verified-qwen-v1')
+  route='/mobile/examples/'+self.day
+  self.assertEqual(self.post(route,payload).status_code,200)
+  for narrative in ['我第一版日記。','我第二版日記。']:
+   rows=self.client.get('/mobile/daily/'+self.day+'/sources',headers=self.headers).json()['sources']
+   self.assertEqual(self.post('/mobile/daily/'+self.day+'/draft',dict(content=narrative,source_ids=[x['id'] for x in rows])).status_code,200)
+   # Retrying the same batch must retain the draft, not erase progress.
+   self.assertEqual(self.post(route,payload).json()['daily']['draft_content'],narrative)
+   payload['source_revision']+='-next'
+   next_run=self.post(route,payload)
+   self.assertEqual(next_run.status_code,200)
+   self.assertEqual(next_run.json()['daily']['workflow_status'],'pending_aggregation')
+  archived=list(self.db.diary_example_archive.find({'userId':self.uid,'collection':'daily_diaries'}))
+  self.assertEqual({x['snapshot']['draft_content'] for x in archived},{'我第一版日記。','我第二版日記。'})
+  self.assertEqual(self.db.conversations.count_documents({'userId':self.uid}),4)
 
 if __name__=='__main__':unittest.main()
