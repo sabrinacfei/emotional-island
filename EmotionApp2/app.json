@@ -53,7 +53,8 @@
           "forceCxx20": true,
           "enableOpenCLAndHexagon": false
         }
-      ]
+      ],
+      "./plugins/withSceneLifecycle.cjs"
     ]
   }
 }
