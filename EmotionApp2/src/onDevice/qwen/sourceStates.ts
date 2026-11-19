@@ -11,6 +11,6 @@ export function parseSourceEmotionStates(output: unknown, quote: string): Source
  if(!value || Object.keys(value).join()!=='states' || !Array.isArray(value.states) || value.states.length>4)throw new Error('Invalid source states');
  return value.states.filter(item=>{
   if(!item || Object.keys(item).sort().join()!=='effect,emotion,holder,phrase' || typeof item.phrase!=='string' || !item.phrase.trim() || item.phrase.length>120 || !['writer','other','unclear'].includes(item.holder) || ![...EMOTIONS,'Other'].includes(item.emotion) || !['improved','continued','unclear'].includes(item.effect))throw new Error('Invalid source state');
-  return quote.includes(item.phrase);
+  return quote.includes(item.phrase) && !/[？?]/u.test(item.phrase);
  });
 }

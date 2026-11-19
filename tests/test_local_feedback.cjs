@@ -272,7 +272,7 @@ test('successful relief requires both an improved outcome and an exact source qu
    return emptyExtraction(system);
   },()=>false);
   assert.equal(result.causes.length,outcome==='improved'?1:0);
-  if(outcome==='improved')assert.deepEqual(result.causes[0].emotions,['Trust']);
+  if(outcome==='improved')assert.deepEqual(result.causes[0].emotions,[]);
  }
 });
 test('invented quotes and malformed reviews never become accepted evidence',async()=>{
@@ -399,6 +399,7 @@ test('motivation and future arrangements alone do not establish emotional relief
  assert.equal(hasReliefOutcome('把事情寫進行事曆，發現好多值得期待的安排，覺得充滿動力。'),false);
  assert.equal(hasReliefOutcome('跟朋友聊完後，我慢慢放鬆。'),true);
  assert.equal(hasReliefOutcome('散步讓我心情變好。'),true);
+ assert.equal(hasReliefOutcome('同事肯定後，沉重的心情也因此輕鬆了一些。'),true);
 });
 
 
@@ -496,7 +497,7 @@ test('late real relief in selected events is checked with its own action context
   return emptyExtraction(system);
  },()=>false,[],{Sadness:80,Trust:20});
  assert.equal(result.causes[0].type,'buffer');
- assert.deepEqual(result.causes[0].emotions,['Trust']);
+ assert.deepEqual(result.causes[0].emotions,[]);
  assert.equal(result.causes[0].evidence,'後來朋友幫我解決問題，讓我安心。');
 });
 
@@ -525,4 +526,23 @@ test('rejecting an invented cause label preserves explicit feelings without inve
  assert.equal(result.emotion_sources[0].emotion,'Sadness');
  assert.equal(result.emotion_sources[0].evidence,raw);
  assert.deepEqual(result.causes,[]);
+});
+
+test('long mixed diaries retrieve late emotion evidence within bounded passages',async()=>{
+ const raw=Array.from({length:14},(_,i)=>i===12?'同事肯定我的努力，我有點意外。':`第${i+1}件事情完成了。`).join('');
+ const batches=[];
+ const result=await generateGroundedSources(raw,async(system,payload)=>{
+  if(system===SOURCE_STATE_SYSTEM)return stateOutput('有點意外','Surprise');
+  if(payload.source_quote)return {output:{topic:'同事肯定',cause_clause_ids:[1,2]}};
+  if(payload.quote&&payload.explanation)return {output:{supported:true}};
+  if(system.includes('辨識一筆調適行動'))return emptyExtraction(system);
+  batches.push(payload.diary_sentences);
+  const found=payload.diary_sentences.find(x=>x.text.includes('有點意外'));
+  return {output:{supported:!!found,sentence_ids:found?[found.id]:[]}};
+ },()=>false,['Surprise'],{Surprise:90,Joy:10});
+ assert.ok(batches.length>=2);
+ assert.ok(batches.every(x=>x.length<=6));
+ assert.equal(result.emotion_sources[0].emotion,'Surprise');
+ assert.equal(result.emotion_sources[0].evidence,'同事肯定我的努力，我有點意外。');
+ assert.deepEqual(parseSourceEmotionStates(stateOutput('我真的都沒事嗎？','Fear').output,'我真的都沒事嗎？'),[]);
 });

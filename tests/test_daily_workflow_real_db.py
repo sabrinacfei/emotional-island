@@ -189,4 +189,15 @@ class WorkflowIntegration(unittest.TestCase):
   self.assertEqual({x['snapshot']['draft_content'] for x in archived},{'我第一版日記。','我第二版日記。'})
   self.assertEqual(self.db.conversations.count_documents({'userId':self.uid}),4)
 
+ def test_seven_supplied_originals_keep_every_fragment_and_time(self):
+  fragments=[f'第{i}則原始小日記。' for i in range(1,8)]
+  labels=['09:10','11:35','12:20','14:15','17:40','19:05','21:30']
+  payload=dict(fragments=fragments,time_labels=labels,content='保留七則原文並重新整理。',restart_from_fragments=True,source_revision='seven-originals-v1')
+  result=self.post('/mobile/examples/'+self.day,payload)
+  self.assertEqual(result.status_code,200)
+  self.assertEqual(result.json()['source_count'],7)
+  rows=self.client.get('/mobile/daily/'+self.day+'/sources',headers=self.headers).json()['sources']
+  self.assertEqual([x['content'] for x in rows],fragments)
+  self.assertEqual(len(rows),7)
+
 if __name__=='__main__':unittest.main()

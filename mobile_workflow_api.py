@@ -107,8 +107,8 @@ def router(db, current_user, serialize):
         if data.source_revision and not data.restart_from_fragments:
             raise HTTPException(422, "重新整理版本必須從小日記開始。")
         if data.restart_from_fragments:
-            if len(data.fragments) < 4 or len(data.fragments) > 6:
-                raise HTTPException(422, "完整示範流程每天需要四至六則小日記。")
+            if len(data.fragments) < 4 or len(data.fragments) > 8:
+                raise HTTPException(422, "完整示範流程每天需要四至八則小日記。")
             same_run = diary and diary.get("data_origin") == "generated-example" and diary.get("example_source_contents") == data.fragments and diary.get("example_source_revision") == data.source_revision
             if not same_run:
                 for collection in ("conversations", "daily_diaries", "emotion_analyses", "emotion_trends"):
