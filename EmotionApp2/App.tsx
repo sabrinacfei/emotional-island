@@ -2168,13 +2168,13 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
               analysis:previous.classifier_analysis,classifier_trace:previous.classifier_trace,
               classification_translation:previous.classification_translation,risk_floor:previous.risk_level};
           }
-          return classifyOnPhone(text);
+          return classifyOnPhone(text,setProgress);
         }, phoneSLM, setProgress);
       const saved: PhoneDiary = { ...entry, result: feedback, syncStatus: 'pending' };
       await savePhoneDiary(saved);
       if (feedback.status === 'unavailable') {
-        const phases = { classification: '情緒分類', assessment: '語境理解', assessment_validation: '語境檢查', support: '陪伴回饋', support_validation: '回饋檢查', causes: '情緒成因', causes_validation: '成因檢查' };
-        setProgress(`日記已定稿，${feedback.failure_stage ? phases[feedback.failure_stage] : '分析'}尚未完成，可稍後重試。`); return;
+        const phases = { translation: '英文整理', classification: '情緒分類', assessment: '語境理解', assessment_validation: '語境檢查', support: '陪伴回饋', support_validation: '回饋檢查', causes: '情緒成因', causes_validation: '成因檢查' };
+        setProgress(`日記已定稿，${feedback.failure_stage ? phases[feedback.failure_stage] : '分析'}尚未完成。${feedback.failure_message || '已完成的內容會保留，可繼續分析。'}`); return;
       }
       let committed;
       try { committed = await syncPhoneFeedback(BASE_URL, token, saved, feedback); }

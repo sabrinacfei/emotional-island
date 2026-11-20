@@ -31,7 +31,8 @@ export type LocalFeedback = Support & Decision & {
   causes?: EmotionCause[];
   emotion_sources?: EmotionSource[];
   source_analysis_version?: 'emotion-evidence-v2' | 'emotion-evidence-v3' | 'emotion-evidence-v4' | 'emotion-evidence-v5';
-  failure_stage?: 'classification' | 'assessment' | 'assessment_validation' | 'support' | 'support_validation' | 'causes' | 'causes_validation';
+  failure_reason?:string; failure_message?:string;
+  failure_stage?: 'translation' | 'classification' | 'assessment' | 'assessment_validation' | 'support' | 'support_validation' | 'causes' | 'causes_validation';
 };
 export interface PhoneSLM {
   analyzeDaily?(input: {diary:string; emotion_scores?:Scores; emotion_probabilities?:Scores; safety:Decision}): Promise<SLMRun>;
@@ -203,11 +204,14 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
     }
     return { ...base(), ...support, ...sources, inference_source: model.inferenceSource, status: 'completed', safety_check_status: 'screened', context: assessment.context };
   } catch (error) {
+    if(error instanceof Error && error.name==='TranslationStageError')stage='translation';
+    const reason=error instanceof Error?error.message:'Unknown local failure';
+    const message=/離開前景|輸出中止/.test(reason)?'分析已中斷，請保持 App 開啟後繼續。':/已有本機|正在執行/.test(reason)?'已有分析處理中，請等待目前作業完成。':/上下文|長度上限|超出/.test(reason)?'這次內容超出處理容量，定稿已保留。':stage==='translation'?'英文整理中斷，定稿已保留，可繼續分析。':'分析中斷，已完成的內容會保留，可繼續分析。';
     if (__DEV__) {
       console.error('[AI Analysis Failed]', { stage: 'local-feedback', errorType: error instanceof Error ? error.name : 'UnknownError' });
     }
     // Failed checks never become SUPPORT_MODE. Keep valid scores without claiming the route was screened.
-    return { ...base(), ...fixedSafety(safety), inference_source: 'unavailable', response_mode: 'SAFE_MODE', status: 'unavailable', safety_check_status: 'unavailable', context: null, failure_stage: stage };
+    return { ...base(), ...fixedSafety(safety), inference_source: 'unavailable', response_mode: 'SAFE_MODE', status: 'unavailable', safety_check_status: 'unavailable', context: null, failure_stage: stage,failure_reason:reason.slice(0,240),failure_message:message };
   }
 }
 

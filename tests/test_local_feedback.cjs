@@ -288,16 +288,14 @@ test('invented quotes and malformed reviews never become accepted evidence',asyn
  },()=>false),/Invalid evidence review/);
 });
 const { translateClassificationDiary }=load('classificationTranslation');
-test('classification translation preserves exact originals and refuses meaning changes',async()=>{
- const input='我試著聽音樂，但還是很煩躁。\n\n晚上朋友陪我，我才放鬆。';
- let checks=0;
+test('translation uses one generation for a complete fitting diary and preserves source binding',async()=>{
+ const input='我試著聽音樂，但還是很煩躁。\n\n晚上朋友陪我，我才放鬆。';let calls=0;
  const result=await translateClassificationDiary(input,async(system,payload)=>{
-  if('source' in payload){checks++;return{output:{faithful:true,issues:[]}};}
-  return{output:{english:'I tried listening to music but remained irritated. In the evening, my friend stayed with me and only then did I relax.'}};
+  calls++;assert.equal(payload.diary,input);assert.equal('source' in payload,false);
+  return {output:{english:'I tried listening to music but was still irritated. Later, I relaxed with my friend.'}};
  },()=>false);
- assert.equal(result.segments.map(s=>s.source).join(''),input);assert.ok(checks);
- assert.match(result.text,/remained irritated/);
- await assert.rejects(translateClassificationDiary(input,async(system,payload)=>({output:'source' in payload?{faithful:false,issues:['Emotion was changed']}:{english:'Listening to music made me happy.'}}),()=>false),/changed diary meaning/);
+ assert.equal(calls,1);assert.equal(result.segments.map(s=>s.source).join(''),input);
+ await assert.rejects(translateClassificationDiary(input,async()=>({output:{english:''}}),()=>false),/Invalid classification translation/);
 });
 test('translation budget splitting never summarizes or drops source characters',async()=>{
  const input='早上收到壞消息，我很難過。晚上和朋友聊過後比較安心。';
@@ -597,4 +595,19 @@ test('single-pass original evidence includes a dependent outcome and rejects rol
  assert.equal(result.support.comfort.includes('朋友遲到'),false);
  assert.equal(result.sources.causes[0].type,'buffer');
  assert.ok(result.sources.causes[0].evidence.endsWith('心情輕鬆了一些。'));
+});
+
+test('completed phone translation is reused after restart when classification needs a retry',async()=>{
+ const raw='有人插隊，我很生氣。';let stored=null,calls=0;
+ const cache={get:async()=>stored,set:async(_,value)=>{stored=value;}};
+ const generate=async()=>{calls++;return run({english:'Someone cut in line, and I felt angry.'});};
+ const first=new TranslationService(generate,()=>false,cache);const result=await first.translate(raw);
+ const reopened=new TranslationService(generate,()=>false,cache);assert.deepEqual(await reopened.translate(raw),result);assert.equal(calls,1);
+ await reopened.translate(raw+'後來回家。');assert.equal(calls,2);
+});
+
+test('a translation failure records its real stage and preserves a resumable draft',async()=>{
+ const h=setup();const failure=new Error('App 已離開前景。');failure.name='TranslationStageError';
+ const result=await runLocalFeedback(diary,async()=>{throw failure;},h.slm);
+ assert.equal(result.status,'unavailable');assert.equal(result.failure_stage,'translation');assert.equal(result.failure_reason,'App 已離開前景。');assert.equal(h.calls.length,0);
 });

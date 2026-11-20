@@ -1,5 +1,6 @@
 import { initLlama, type LlamaContext, type RNLlamaOAICompatibleMessage } from 'llama.rn';
 import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SETTINGS, RUNTIME_VERSION } from './config';
 import { PHONE_MODEL, verifyModel } from './storage';
 import { assertPromptFits, selectDisplayContent } from './policy';
@@ -188,7 +189,11 @@ async function assessAll(input: Parameters<PhoneSLM['assess']>[0]): Promise<SLMR
     support_style: [a, b].some(v => v.support_style === 'listening') ? 'listening' : value.support_style } };
 }
 
-export const translationService = new TranslationService((system, payload, schema) => json(system, payload, schema, 0.1), error => error instanceof PromptBudgetError);
+const translationCacheKey=(diary:string)=>`classificationTranslation:one-pass-v1:${PHONE_MODEL.sha256}:${diary}`;
+export const translationService = new TranslationService((system,payload,schema)=>json(system,payload,schema,0.1,2048),error=>error instanceof PromptBudgetError,{
+  get:async diary=>{const raw=await AsyncStorage.getItem(translationCacheKey(diary));return raw?JSON.parse(raw):null;},
+  set:async(diary,result)=>{await AsyncStorage.setItem(translationCacheKey(diary),JSON.stringify(result));},
+});
 
 export async function generateDailySources(diary: string, displayScores?: Record<string, number>) {
   const result=await phoneSLM.analyzeDaily!({diary,emotion_scores:displayScores as any,safety:decision(ruleRisk(diary))});
