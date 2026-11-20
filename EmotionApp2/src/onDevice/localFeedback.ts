@@ -48,7 +48,7 @@ export function causeCategoryMatches(type: EmotionCause['type'], emotions: strin
 
 export function parseCauses(input: unknown, diary: string): EmotionCause[] {
   const v = input as { causes: EmotionCause[] };
-  if (!v || Object.keys(v).join() !== 'causes' || !Array.isArray(v.causes) || v.causes.length > 3) throw new Error('Invalid causes');
+  if (!v || Object.keys(v).join() !== 'causes' || !Array.isArray(v.causes) || v.causes.length > 6) throw new Error('Invalid causes');
   return v.causes.map(c => {
     if (Object.keys(c).sort().join() !== 'emotions,evidence,explanation,topic,type' || !['stressor', 'buffer', 'joy'].includes(c.type)
       || !Array.isArray(c.emotions) || (!c.emotions.length && c.type !== 'buffer') || c.emotions.length > 3 || c.emotions.some(k => !EMOTIONS.includes(k as any))

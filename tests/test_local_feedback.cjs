@@ -622,3 +622,19 @@ test('direct joy remains a positive source without claiming relief from previous
  assert.equal(parsed.sources.causes.some(c=>c.type==='buffer'),false);
  assert.equal(parsed.sources.causes[0].evidence,raw);
 });
+
+
+test('single-pass diary retains distinct workload, friendship joy and later actual relief events',()=>{
+ const {parseDailyAnalysis}=load('qwen/dailyAnalysis');
+ const raw='組員沒完成報告，我很生氣。事情一直增加，想到晚點要工作就很煩躁。朋友拍照捉弄我，雖然笑說快被她氣死，但真的笑得很開心。同事肯定努力，讓我被理解，原本沉重的心情輕鬆了一些。';
+ const events=[
+  {sentence_ids:[1],emotion:'Anger',category:'stressor',topic:'組員未完成報告',explanation:'組員未完成分工，造成額外負擔與不滿。',outcome:'not_improved'},
+  {sentence_ids:[2],emotion:'Anger',category:'stressor',topic:'工作與課業堆疊',explanation:'事情持續增加，帶來煩躁。',outcome:'not_improved'},
+  {sentence_ids:[3],emotion:'Joy',category:'joy',topic:'朋友玩笑相處',explanation:'朋友間的玩笑帶來歡笑與愉快。',outcome:'improved'},
+  {sentence_ids:[4],emotion:'Trust',category:'buffer',topic:'同事肯定努力',explanation:'同事肯定帶來理解，讓沉重心情緩和。',outcome:'improved'}];
+ const r=parseDailyAnalysis({risk_level:'none',risk_evidence:[],summary:'報告與工作堆疊，也有朋友陪伴與同事肯定。',change:'事情堆疊感到煩躁，同事肯定後明確輕鬆一些。',comfort:'報告進度受阻與持續增加的工作讓今天很疲憊，朋友帶來歡笑，同事的肯定也讓努力被看見。',events},raw);
+ assert.equal(r.sources.causes.length,4);assert.equal(r.sources.causes.filter(c=>c.type==='stressor').length,2);
+ assert.ok(r.sources.causes.some(c=>c.type==='joy'&&c.evidence.includes('朋友')));
+ assert.ok(r.sources.causes.some(c=>c.type==='buffer'&&c.evidence.includes('輕鬆了一些')));
+ assert.ok(r.sources.causes.every(c=>raw.includes(c.evidence)));
+});

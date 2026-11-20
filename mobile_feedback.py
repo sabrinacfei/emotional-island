@@ -110,7 +110,7 @@ class EmotionSource(BaseModel):
 
 class SourceDetails(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    causes: list[Cause] = Field(default_factory=list, max_length=3)
+    causes: list[Cause] = Field(default_factory=list, max_length=6)
     emotion_sources: list[EmotionSource] | None = Field(default=None, max_length=8)
     source_analysis_version: Literal["emotion-evidence-v2", "emotion-evidence-v3", "emotion-evidence-v4", "emotion-evidence-v5"] | None = None
 
