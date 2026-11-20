@@ -5,7 +5,15 @@ export function percentageScores(scores: Record<string, number> = {}): Record<st
   const total = values.reduce((sum, value) => sum + value, 0);
   const probabilities = values.length > 0 && values.every(value => Number.isFinite(value) && value >= 0 && value <= 1)
     && total > 0 && total <= 1.0001;
-  return probabilities ? Object.fromEntries(Object.entries(scores).map(([key, value]) => [key, Math.round(value * 100)])) : scores;
+  if (!probabilities) return scores;
+  const entries=Object.entries(scores);
+  if(Math.abs(total-1)>0.0001)return Object.fromEntries(entries.map(([key,value])=>[key,Math.round(value*100)]));
+  const rounded=Object.fromEntries(entries.map(([key,value])=>[key,Math.floor(value*100)]));
+  const remaining=100-Object.values(rounded).reduce((sum,value)=>sum+value,0);
+  const ranked=entries.map(([key,value],index)=>({key,remainder:value*100-rounded[key],index}))
+    .sort((a,b)=>b.remainder-a.remainder||a.index-b.index);
+  for(const item of ranked.slice(0,remaining))rounded[item.key]++;
+  return rounded;
 }
 
 /** Preserve native ordering when integer chart percentages round to a tie. */

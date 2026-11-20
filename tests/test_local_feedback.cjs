@@ -657,3 +657,58 @@ test('thinking mode displays only the parsed final answer and rejects a reasonin
  assert.equal(result.content.includes('hidden'),false);
  assert.throws(()=>selectDisplayContent({content:'',text:'',reasoning_content:'unfinished'}, {thinkingForcedOpen:true}));
 });
+
+
+test('actual relief remains a buffer when the proposed basic emotion has no separate evidence',()=>{
+ const {parseDailyAnalysis}=load('qwen/dailyAnalysis');
+ const raw='原本負擔很重。同伴分攤任務，心情終於輕鬆了一些。';
+ for(const category of ['buffer','joy','none']){
+  const output={risk_level:'none',risk_evidence:[],summary:'任務分攤減輕負擔。',change:'分攤後心情輕鬆一些。',comfort:'負擔被分攤，原本沉重的心情也得到緩和。',events:[{sentence_ids:[1,2],emotion:'Joy',category,topic:'分攤任務',explanation:'同伴分攤任務，讓沉重心情緩和。',outcome:'improved'}]};
+  const original=JSON.stringify(output);const result=parseDailyAnalysis(output,raw);
+  assert.equal(result.sources.causes.length,1);assert.equal(result.sources.causes[0].type,'buffer');
+  assert.deepEqual(result.sources.causes[0].emotions,[]);
+  assert.equal(result.sources.emotion_sources.some(s=>s.emotion==='Joy'),false);
+  assert.equal(result.sources.causes[0].explanation,output.events[0].explanation);
+  assert.equal(result.sources.causes[0].evidence,raw);
+  assert.equal(JSON.stringify(output),original);
+ }
+});
+
+test('separate relief handling does not promote a failed, planned or other-person outcome',()=>{
+ const {parseDailyAnalysis}=load('qwen/dailyAnalysis');
+ for(const raw of ['試著戴耳機，仍然無法專心，心情沒有改善。','希望明天散步後能放鬆，現在仍很煩躁。','同事分享後她終於放鬆了，但我仍難過。']){
+  const output={risk_level:'none',risk_evidence:[],summary:'記錄實際情緒與嘗試。',change:'原文未表達自身改善。',comfort:'這些感受值得被理解，不需要急著假裝沒事。',events:[{sentence_ids:[1],emotion:'Joy',category:'joy',topic:'調適嘗試',explanation:'調適後心情輕鬆。',outcome:'improved'}]};
+  const original=JSON.stringify(output);const result=parseDailyAnalysis(output,raw);
+  assert.equal(result.sources.causes.some(c=>c.type==='buffer'),false);
+  assert.equal(JSON.stringify(output),original);
+ }
+});
+
+
+test('confirmed emotion popup keeps all original saved event associations without promoting an unconfirmed emotion',()=>{
+ const {emotionEvidence}=load('emotionEvidence');
+ const first={emotion:'Anger',explanation:'分工未完成帶來不滿。',evidence:'分工沒有完成，我很生氣。'};
+ const second={type:'stressor',emotions:['Anger'],explanation:'任務堆疊使心情煩躁。',evidence:'任務一直增加，我很煩躁。'};
+ const raw={final_content:first.evidence+second.evidence,emotion_sources:[first],causes:[{type:'stressor',emotions:['Anger'],explanation:first.explanation,evidence:first.evidence},second]};
+ const found=emotionEvidence(raw,'Anger');assert.equal(found.length,2);assert.equal(found[1].evidence,second.evidence);
+ assert.deepEqual(emotionEvidence({...raw,emotion_sources:[]},'Anger'),[]);
+ assert.deepEqual(emotionEvidence({...raw,causes:[{...second,evidence:'不存在的句子'}]},'Anger'),[first]);
+});
+
+
+test('evidence-first daily output requests only grounded event reasons and no long narrative tasks',()=>{
+ const {dailyAnalysisSchema,parseDailyAnalysis}=load('qwen/dailyAnalysis');
+ const schema=dailyAnalysisSchema('任務太多，感到煩躁。');
+ assert.deepEqual(schema.required,['format','risk_level','risk_evidence','events']);
+ const v=parseDailyAnalysis({format:'evidence-first-v1',risk_level:'none',risk_evidence:[],events:[{sentence_ids:[1],emotion:'Anger',category:'stressor',topic:'任務過多',explanation:'任務過多帶來煩躁。',outcome:'not_improved'}]},'任務太多，感到煩躁。');
+ assert.equal(v.sources.causes[0].evidence,'任務太多，感到煩躁。');
+ assert.equal(v.sources.causes[0].explanation,'任務過多帶來煩躁。');
+});
+
+test('display rounding totals one hundred without changing native probabilities',()=>{
+ const {percentageScores}=load('emotionScores');
+ const raw={Anger:.4003,Anticipation:.0458,Disgust:.0683,Fear:.0263,Joy:.077,Sadness:.1527,Surprise:.1893,Trust:.0403};
+ const frozen=JSON.stringify(raw),display=percentageScores(raw);
+ assert.equal(Object.values(display).reduce((s,n)=>s+n,0),100);
+ assert.equal(JSON.stringify(raw),frozen);assert.equal(display.Anger,40);
+});

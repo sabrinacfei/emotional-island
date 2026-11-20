@@ -11,6 +11,8 @@ from pymongo import ReturnDocument
 from daily_workflow import DailyWorkflow
 from mobile_feedback import EmotionSource, SourceDetails, daily_source_fields
 from slm_schemas import Scores
+from reviewed_sources import register_review_routes, within_demo_scope
+from reviewed_sources import register_review_routes, within_demo_scope
 
 
 class Fragment(BaseModel):
@@ -82,6 +84,7 @@ def weekly_summary(start, analyses, closed=True):
 def router(db, current_user, serialize):
     api = APIRouter(prefix="/mobile", tags=["Daily workflow"])
     workflow = DailyWorkflow(db)
+    register_review_routes(api, db, current_user, serialize, workflow)
 
     def valid_day(day):
         try:
@@ -172,7 +175,8 @@ def router(db, current_user, serialize):
             await workflow.ensure(uid, day)
         rows = await db.daily_diaries.find({"userId": uid, "workflow_status": {"$in": [
             "pending_aggregation", "awaiting_confirmation", "finalized_pending_analysis"]}}).sort("date_label", 1).to_list(None)
-        return {"pending": [serialize(x) for x in rows]}
+        settings = await workflow.settings(uid)
+        return {"pending": [serialize(x) for x in rows if within_demo_scope(x, settings.get("demo_scope"))]}
 
     @api.get("/daily/{day}/sources")
     async def sources(day: str, uid=Depends(current_user)):
@@ -203,6 +207,10 @@ def router(db, current_user, serialize):
         record = await db.emotion_analyses.find_one(query)
         if not record:
             raise HTTPException(409, "此日記目前無法補充情緒來源。")
+        if record.get("source_review"):
+            raise HTTPException(409, "已保存人工核對結果；請先明確取消核對版本再重新分析。")
+        if record.get("source_review"):
+            raise HTTPException(409, "人工核對結果已保存，請先檢視修訂紀錄。")
         if record.get("classification_translation"):
             probabilities = (record.get("classifier_analysis") or {}).get("probabilities") or record.get("scores") or {}
             dominant = max(probabilities, key=probabilities.get) if probabilities else None
@@ -232,7 +240,8 @@ def router(db, current_user, serialize):
         rows = await db.emotion_analyses.find({"userId": uid,
             "$or": [{"analysis_type": "daily"}, {"daily_content": {"$exists": True}}, {"final_content": {"$exists": True}}],
             "date_label": {"$gte": start, "$lte": end.isoformat()}}).sort([("analyzed_at", 1), ("_id", 1)]).to_list(None)
-        result = weekly_summary(start, [serialize(x) for x in rows], closed=closed)
+        result = weekly_summary(start, [serialize(x) for x in rows if within_demo_scope(x, settings.get("demo_scope"))], closed=closed)
         return result
 
+    register_review_routes(api, db, current_user, serialize, workflow)
     return api

@@ -1655,11 +1655,15 @@ async def mark_achievements_read(data: NotificationReadInput, uid: ObjectId = De
 async def get_history(uid: ObjectId = Depends(get_current_user)):
     daily_query = {"userId": uid, "$or": [{"analysis_type": "daily"}, {"daily_content": {"$exists": True}}, {"final_content": {"$exists": True}}]}
     docs = await db.emotion_analyses.find(daily_query).sort("date_label", -1).to_list(100)
-    return [serialize_doc(doc) for doc in docs]
+    from reviewed_sources import within_demo_scope
+    settings = await db.daily_diary_settings.find_one({"userId": uid}) or {}
+    return [serialize_doc(doc) for doc in docs if within_demo_scope(doc, settings.get("demo_scope"))]
 
 
 @app.get("/trends")
 async def get_trends(uid: ObjectId = Depends(get_current_user)):
+    from reviewed_sources import within_demo_scope
+    settings = await db.daily_diary_settings.find_one({"userId": uid}) or {}
     docs = await db.emotion_trends.find({"userId": uid}).sort("date_label", 1).to_list(100)
     result = []
     for doc in docs:
@@ -1668,6 +1672,8 @@ async def get_trends(uid: ObjectId = Depends(get_current_user)):
             sort=[("analyzed_at", -1)]
         )
         if latest:
+            if not within_demo_scope(latest, settings.get("demo_scope")):
+                continue
             doc["dominant_emotions"] = latest.get("dominant_emotions", [])
             doc["stressor_tags"]     = latest.get("stressor_tags", [])
             doc["buffer_tags"]       = latest.get("buffer_tags", [])

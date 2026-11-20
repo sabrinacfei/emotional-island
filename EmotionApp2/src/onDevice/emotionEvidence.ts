@@ -12,9 +12,17 @@ export function emotionEvidence(raw: any, emotion: string): Source[] {
   const hasOriginal=(source:Source)=>typeof source.evidence==='string' && source.evidence.trim().length>=2 && typeof diary==='string' && diary.includes(source.evidence);
   const checked = (Array.isArray(raw?.emotion_sources) ? raw.emotion_sources : [])
     .filter((source: Source) => source.emotion === emotion && isSourceExplanation(source.explanation) && hasOriginal(source));
-  if (Array.isArray(raw?.emotion_sources)) return checked;
-  return (Array.isArray(raw?.causes) ? raw.causes : [])
+  const related = (Array.isArray(raw?.causes) ? raw.causes : [])
     .filter((source: Source) => source.emotions?.includes(emotion) && isSourceExplanation(source.explanation) && hasOriginal(source));
+  // An explicit unconfirmed emotion stays unconfirmed. Once confirmed, retain
+  // all of its saved event associations rather than hiding every later event.
+  if (Array.isArray(raw?.emotion_sources) && !checked.length) return [];
+  const seen = new Set<string>();
+  return [...checked, ...related].filter((source: Source) => {
+    const key = `${source.evidence}\0${source.explanation}`;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
 }
 
 /** Keep complete sentences, including quotation marks and paragraph boundaries. */

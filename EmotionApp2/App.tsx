@@ -238,9 +238,11 @@ function getTopEmotions(scores: Record<string, number> = {}, limit = 3, raw?: an
 
 // 對齊 HTML getEmoSource：根據 EMO_SRC 取對應 tag 的說明
 function getEmoSource(raw: any, key: string, scoreVal: number): string {
+  const annotation=raw?.source_review?.annotations?.[key];
+  if(annotation?.level==='unconfirmed')return annotation.explanation || '目前無法從日記中確認具體原因。';
   const verified=emotionEvidence(raw,key);
-  if(verified.length)return Array.from(new Set(verified.map(source=>source.explanation))).join('\n\n');
-  return `${scoreVal}% 是模型對文字的估計比例，目前尚無經確認的中文原文依據，不能據此確認你有這個情緒。`;
+  if(verified.length)return `${annotation?.level==='inferred'?'可能原因（推論）：\n':''}${Array.from(new Set(verified.map(source=>source.explanation))).join('\n\n')}`;
+  return '目前無法從日記中確認具體原因。';
 }
 
 function emotionTagsFromResult(result: any) {
@@ -1860,7 +1862,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
   const top = getTopEmotions(scores, 3, rec?.raw);
   const dailyContent = rec?.raw?.final_content || rec?.raw?.daily_content || rec?.raw?.dailyContent;
   const canRefreshSources = rec?.raw?.processing_mode === 'phone_slm_v1' && rec.raw.classification_available === true
-    && rec.raw.risk_level !== 'high' && dailyContent;
+    && rec.raw.risk_level !== 'high' && dailyContent && !rec.raw.source_review;
 
   const refreshSources = async () => {
     if (!rec || !canRefreshSources || refreshingSources) return;
@@ -1886,6 +1888,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
           {date || rec?.date}　心情分析
         </Text>
         {rec?.raw?.data_origin === 'generated-example' && <Text style={[s.mini, { color: C.sub, textAlign: 'center', marginTop: 10 }]}>示範日記</Text>}
+        {rec?.raw?.source_review?.origin === 'human-reviewed' && <Text testID="analysis-review-origin" style={[s.mini,{color:C.sub,textAlign:'center',marginTop:6}]}>人工核對結果</Text>}
 
         {/* 主要情緒卡片 */}
         <View style={[s.resultCard, { flexDirection: 'row', alignItems: 'center', marginTop: 30 }]}>
@@ -1894,7 +1897,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
             <Text style={[s.label, { fontSize: 20, lineHeight: 30 }]}>主要情緒</Text>
             {top.map(([k, v]) => (
               <Text key={k} style={[s.body, { color: EC[k]?.c || C.text, fontSize: 19, lineHeight: 31 }]}>
-                {EC[k]?.l || k}　{v}%{!emotionEvidence(rec?.raw,k).length ? '（未確認）' : ''}
+                {EC[k]?.l || k}　{v}%{rec?.raw?.source_review?.annotations?.[k]?.level==='inferred'?'（推論）':!emotionEvidence(rec?.raw,k).length ? '（未確認）' : ''}
               </Text>
             ))}
           </View>
@@ -1909,6 +1912,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
 
         <View style={s.resultCard}>
           <Text style={[s.label, { marginBottom: 12 }]}>壓力來源、情緒緩衝、快樂來源</Text>
+          {rec?.raw?.source_review?.origin==='human-reviewed' && <Text testID="source-review-origin" style={[s.mini,{color:C.sub,marginBottom:12}]}>人工核對結果</Text>}
           <TagReasonSection raw={rec?.raw} />
           {canRefreshSources && <TouchableOpacity testID="refresh-daily-sources" style={[s.primaryBtn, { marginTop: 16 }]}
             disabled={refreshingSources} onPress={refreshSources}>
