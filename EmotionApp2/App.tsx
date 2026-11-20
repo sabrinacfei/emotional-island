@@ -2147,7 +2147,18 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
       const feedback = entry.result && (entry.result.status === 'local_safety'
         || (entry.result.status === 'completed' && entry.result.classification_translation?.version === 'zh-en-faithful-v1'
           && entry.result.source_analysis_version === 'emotion-evidence-v4'))
-        ? entry.result : await runLocalFeedback(entry.content, classifyOnPhone, phoneSLM, setProgress);
+        ? entry.result : await runLocalFeedback(entry.content, async text => {
+          const previous=entry.result;
+          if(previous?.status==='unavailable' && ['causes','causes_validation'].includes(previous.failure_stage || '')
+            && previous.classifier_trace && previous.classifier_analysis && previous.scores
+            && previous.classification_translation?.version==='zh-en-faithful-v1'
+            && previous.classification_translation.segments.map(part=>part.source).join('')===text) {
+            return {backend:'modernbert',classification_available:true,receipt_token:previous.receipt_token,scores:previous.scores,
+              analysis:previous.classifier_analysis,classifier_trace:previous.classifier_trace,
+              classification_translation:previous.classification_translation,risk_floor:previous.risk_level};
+          }
+          return classifyOnPhone(text);
+        }, phoneSLM, setProgress);
       const saved: PhoneDiary = { ...entry, result: feedback, syncStatus: 'pending' };
       await savePhoneDiary(saved);
       if (feedback.status === 'unavailable') {
