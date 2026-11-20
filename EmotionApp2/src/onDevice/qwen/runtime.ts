@@ -41,7 +41,7 @@ export async function releasePhoneModel() {
   if (context) { await context.release(); context = null; }
 }
 
-async function json(system: string, payload: unknown, schema: object, temperature: number = SETTINGS.temperature, maxOutput: number = SETTINGS.n_predict): Promise<SLMRun> {
+async function json(system: string, payload: unknown, schema: object, temperature: number = SETTINGS.temperature, maxOutput: number = SETTINGS.n_predict, enableThinking: boolean = SETTINGS.enable_thinking): Promise<SLMRun> {
   if (busy) throw new Error('已有本機推論正在執行。');
   const endTask = beginModelTask('qwen-generation');
   busy = true; cancelled = false;
@@ -50,17 +50,26 @@ async function json(system: string, payload: unknown, schema: object, temperatur
     if (cancelled || AppState.currentState !== 'active') throw new Error('App 已離開前景。');
     await ctx.clearCache(true);
     const messages: RNLlamaOAICompatibleMessage[] = [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(payload) }];
-    const template = { jinja: true, enable_thinking: SETTINGS.enable_thinking, chat_template_kwargs: { enable_thinking: SETTINGS.enable_thinking }, reasoning_format: 'deepseek' as const,
+    const thinkingBudget = enableThinking ? SETTINGS.thinking_budget_tokens : 0;
+    const template = { jinja: true, enable_thinking: enableThinking, chat_template_kwargs: { enable_thinking: enableThinking }, reasoning_format: 'deepseek' as const,
       response_format: { type: 'json_schema' as const, json_schema: { strict: true, schema } } };
     const formatted = await ctx.getFormattedChat(messages, undefined, template);
     if (formatted.type !== 'jinja') throw new Error('本機模型未使用已驗證的 Jinja 模板。');
     const tokens = await ctx.tokenize(formatted.prompt);
-    try { assertPromptFits(tokens.tokens.length, SETTINGS.n_ctx, maxOutput + SETTINGS.thinking_budget_tokens); }
+    try { assertPromptFits(tokens.tokens.length, SETTINGS.n_ctx, maxOutput + thinkingBudget); }
     catch { throw new PromptBudgetError('完整語境超出單次上下文，需分段處理。'); }
     const started = performance.now();
-    const result = await ctx.completion({ messages, ...template, n_predict: maxOutput + SETTINGS.thinking_budget_tokens,
-      thinking_budget_tokens: SETTINGS.thinking_budget_tokens,
+    const result = await ctx.completion({ messages, ...template, n_predict: maxOutput + thinkingBudget,
+      thinking_budget_tokens: thinkingBudget,
       temperature, top_p: SETTINGS.top_p, top_k: SETTINGS.top_k, seed: SETTINGS.seed });
+    await AsyncStorage.setItem('lastQwenCompletion', JSON.stringify({
+      captured_at: new Date().toISOString(), thinking_enabled: enableThinking,
+      schema_fields: Object.keys((schema as any).properties || {}), prompt_tokens: tokens.tokens.length,
+      thinking_forced_open: 'thinking_forced_open' in formatted && formatted.thinking_forced_open === true,
+      content: result.content, text: result.text, reasoning_content: result.reasoning_content,
+      tokens_predicted: result.tokens_predicted, stopped_eos: result.stopped_eos,
+      stopped_limit: result.stopped_limit, interrupted: result.interrupted,
+    })).catch(() => undefined);
     if (__DEV__) {
       console.log('[Qwen Diagnostics]', {
         phase: schema === assessmentSchema ? 'assessment' : 'support',
@@ -133,7 +142,7 @@ async function json(system: string, payload: unknown, schema: object, temperatur
     const selected = selectDisplayContent(result, { thinkingForcedOpen: 'thinking_forced_open' in formatted && formatted.thinking_forced_open === true });
     return { output: JSON.parse(selected.content), trace: { execution: 'on-device', runtime: RUNTIME_VERSION, model: PHONE_MODEL.id, sha256: PHONE_MODEL.sha256,
       tokens_predicted: result.tokens_predicted, duration_ms: performance.now() - started, tokens_per_second: result.timings?.predicted_per_second ?? null,
-      stopped_eos: result.stopped_eos, thinking_enabled: SETTINGS.enable_thinking, raw_text: selected.content } };
+      stopped_eos: result.stopped_eos, thinking_enabled: enableThinking, raw_text: selected.content } };
   } finally { busy = false; endTask(); }
 }
 
@@ -191,7 +200,7 @@ async function assessAll(input: Parameters<PhoneSLM['assess']>[0]): Promise<SLMR
 }
 
 const translationCacheKey=(diary:string)=>`classificationTranslation:one-pass-v1:${PHONE_MODEL.sha256}:${diary}`;
-export const translationService = new TranslationService((system,payload,schema)=>json(system,payload,schema,0.1,2048),error=>error instanceof PromptBudgetError,{
+export const translationService = new TranslationService((system,payload,schema)=>json(system,payload,schema,0.1,2048,false),error=>error instanceof PromptBudgetError,{
   get:async diary=>{const raw=await AsyncStorage.getItem(translationCacheKey(diary));return raw?JSON.parse(raw):null;},
   set:async(diary,result)=>{await AsyncStorage.setItem(translationCacheKey(diary),JSON.stringify(result));},
 });
@@ -205,12 +214,12 @@ export async function generateDailySources(diary: string, displayScores?: Record
 
 export async function composePhoneDaily(sources: DailySource[]): Promise<string> {
   return composeDaily(sources, async segments => (await json(DAILY_COMPOSE_SYSTEM, { chronological_fragments: segments },
-    { type: 'object', additionalProperties: false, required: ['diary'], properties: { diary: str } }, 0.1)).output,
+    { type: 'object', additionalProperties: false, required: ['diary'], properties: { diary: str } }, 0.1,2048,false)).output,
     error => error instanceof PromptBudgetError);
 }
 
 export const phoneSLM: PhoneSLM = {
-  analyzeDaily: input => json(DAILY_ANALYSIS_SYSTEM,dailyAnalysisInput(input.diary,input.emotion_scores),dailyAnalysisSchema(input.diary),0.1,2048),
+  analyzeDaily: input => json(DAILY_ANALYSIS_SYSTEM,dailyAnalysisInput(input.diary,input.emotion_scores),dailyAnalysisSchema(input.diary),0.1,2048,false),
   causes: async input => ({ output: await generateDailySources(input.diary, input.emotion_scores) }),
   assess: assessAll,
   respond: async input => {

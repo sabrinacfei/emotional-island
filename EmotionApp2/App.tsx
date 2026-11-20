@@ -1602,7 +1602,7 @@ function ElfFeedback({ result }: { result: Partial<LocalFeedback> & { feedback?:
 // AIAnalysisScreen
 // ─────────────────────────────────────────────────────────
 function AIAnalysisScreen({ navigation, route }: any) {
-  const { result, record, syncPending } = route.params || {};
+  const { result, record, syncPending, analysisPending, date } = route.params || {};
   return (
     <ScreenBg source={require('./assets/Sentiment_Analysis.png')}>
       <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 58, paddingBottom: 80 }}>
@@ -1614,7 +1614,10 @@ function AIAnalysisScreen({ navigation, route }: any) {
           <Text style={s.label}>今日情緒分布</Text>
           <EmotionBarChart scores={result.scores} />
         </View>}
-        <ElfFeedback result={result || {}} />
+        {analysisPending ? <View style={s.resultCard}>
+          <Text style={s.body}>分類已完成，情緒來源尚未完成。已產生的分類結果會保留。</Text>
+          <TouchableOpacity testID="resume-pending-analysis" style={s.primaryBtn} onPress={() => navigation.navigate('DailyDiaryEdit', { date })}><Text style={s.primaryBtnText}>繼續分析</Text></TouchableOpacity>
+        </View> : <ElfFeedback result={result || {}} />}
         {record && <TouchableOpacity testID="view-daily-analysis" style={s.primaryBtn} onPress={() => navigation.navigate('DayAnalysis', { date: record.date, record })}>
           <Text style={s.primaryBtnText}>查看當日分析　›</Text>
         </TouchableOpacity>}
@@ -2098,15 +2101,22 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
   const [sources, setSources] = useState<any[]>([]);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(false);
+  const processingRef = useRef(false);
   const [progress, setProgress] = useState('');
+  const [localResult, setLocalResult] = useState<LocalFeedback | null>(null);
   const refresh = async () => {
     const data = await getMobile(BASE_URL, token, `/mobile/daily/${date}/sources`);
     setDaily(data.daily); setSources(data.sources || []);
-    setContent(data.daily?.final_content || data.daily?.draft_content || '');
+    const savedContent = data.daily?.final_content || data.daily?.draft_content || '';
+    setContent(savedContent);
+    const pending = await pendingPhoneDiaries(username);
+    setLocalResult(pending.find(item => item.kind === 'daily' && item.date === date && item.content === savedContent)?.result || null);
     return data;
   };
   useEffect(() => { void refresh().catch(() => setProgress('讀取未完成，請稍後重試。')); }, [date, token]);
   const compose = async () => {
+    if (processingRef.current) return;
+    processingRef.current = true;
     setLoading(true); setProgress('小島精靈正在整理...');
     try {
       const data = await refresh();
@@ -2117,11 +2127,12 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
       });
       await refresh(); setProgress('日記已整理，可確認內容後再按分析。');
     } catch { setProgress('整理尚未完成，原始小日記仍保留，請稍後重試。'); }
-    finally { setLoading(false); }
+    finally { processingRef.current = false; setLoading(false); }
   };
   const save = async (preparedContent?: string) => {
     const analysisContent = typeof preparedContent === 'string' ? preparedContent : content;
-    if (!analysisContent.trim()) return;
+    if (!analysisContent.trim() || processingRef.current) return;
+    processingRef.current = true;
     setLoading(true); setProgress('小島精靈正在思考...');
     try {
       // This transition is persisted before any classifier request, including retries.
@@ -2150,23 +2161,26 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
         }, phoneSLM, setProgress));
       const saved: PhoneDiary = { ...entry, result: feedback, syncStatus: 'pending' };
       await savePhoneDiary(saved);
+      setLocalResult(feedback);
       if (feedback.status === 'unavailable') {
         const phases = { translation: '英文整理', classification: '情緒分類', assessment: '語境理解', assessment_validation: '語境檢查', support: '陪伴回饋', support_validation: '回饋檢查', causes: '情緒成因', causes_validation: '成因檢查' };
-        setProgress(`日記已定稿，${feedback.failure_stage ? phases[feedback.failure_stage] : '分析'}尚未完成。${feedback.failure_message || '已完成的內容會保留，可繼續分析。'}`); return;
+        setProgress(`日記已定稿，${feedback.failure_stage ? phases[feedback.failure_stage] : '分析'}尚未完成。${feedback.failure_message || '已完成的內容會保留，可繼續分析。'}`);
+        if (feedback.classification_available && feedback.scores) navigation.navigate('AIAnalysis', { result: feedback, analysisPending: true, date });
+        return;
       }
       let committed;
       try { committed = await syncPhoneFeedback(BASE_URL, token, saved, feedback); }
       catch {
         // Keep genuine local analysis usable while the unchanged cloud deployment awaits an update.
         setProgress('本機分析已完成，結果已保留，雲端尚未同步。');
-        navigation.navigate('AIAnalysis', { result: feedback, record: null, syncPending: true });
+        navigation.navigate('AIAnalysis', { result: feedback, record: toTreeRecord({ ...feedback, date_label: date, final_content: entry.content, dominant_emotions: getTopEmotions(feedback.scores || {}, 1, { classifier_analysis: feedback.classifier_analysis }).map(([emotion]) => emotion) }), syncPending: true });
         return;
       }
       await savePhoneDiary({ ...saved, syncStatus: 'synced' });
       setDaily({ ...confirmed, workflow_status: 'analyzed' });
       setProgress(''); navigation.navigate('AIAnalysis', { result: feedback, record: committed.record ? toTreeRecord(committed.record) : null });
     } catch { setProgress('尚未完成同步，請保留內容並重試；定稿不會重複建立。'); }
-    finally { setLoading(false); }
+    finally { processingRef.current = false; setLoading(false); }
   };
   const finalized = ['finalized_pending_analysis', 'analyzed'].includes(daily?.workflow_status);
   return <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -2177,6 +2191,9 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
       {daily?.confirmation_deadline && <Text style={s.mini}>確認截止：{new Date(daily.confirmation_deadline).toLocaleString('zh-TW')}</Text>}
       {!!progress && <Text testID="daily-progress" accessibilityLiveRegion="polite" style={s.body}>{progress}</Text>}
       {!daily && !sources.length && !progress && <Text style={s.body}>這一天還沒有小日記。</Text>}
+      {localResult?.classification_available && localResult.scores && daily?.workflow_status !== 'analyzed' && <View testID="saved-classification-result" style={s.resultCard}>
+        <Text style={s.label}>已完成的情緒分類</Text><EmotionBarChart scores={localResult.scores} />
+      </View>}
       {daily?.workflow_status === 'pending_aggregation' && <TouchableOpacity testID="daily-compose" style={s.primaryBtn} disabled={loading} onPress={compose}><Text style={s.primaryBtnText}>整理當天小日記</Text></TouchableOpacity>}
       {daily && daily.workflow_status !== 'pending_aggregation' && <>
         <View style={[s.diaryBox, { minHeight: 280 }]}><TextInput testID="daily-content" style={[s.diaryInput, { minHeight: 260 }]} value={content} onChangeText={setContent} editable={!finalized && !loading} multiline maxLength={12000} /></View>
