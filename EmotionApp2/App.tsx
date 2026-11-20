@@ -2115,7 +2115,7 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
         content: draft, source_ids: data.sources.map((x: any) => x.id),
         ...(PHONE_MODEL.inferenceSource === 'phone-qwen3.5-2b' ? { draft_source: PHONE_MODEL.inferenceSource } : {}),
       });
-      await refresh(); await save(draft);
+      await refresh(); setProgress('日記已整理，可確認內容後再按分析。');
     } catch { setProgress('整理尚未完成，原始小日記仍保留，請稍後重試。'); }
     finally { setLoading(false); }
   };
@@ -2177,7 +2177,7 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
       {daily?.confirmation_deadline && <Text style={s.mini}>確認截止：{new Date(daily.confirmation_deadline).toLocaleString('zh-TW')}</Text>}
       {!!progress && <Text testID="daily-progress" accessibilityLiveRegion="polite" style={s.body}>{progress}</Text>}
       {!daily && !sources.length && !progress && <Text style={s.body}>這一天還沒有小日記。</Text>}
-      {daily?.workflow_status === 'pending_aggregation' && <TouchableOpacity testID="daily-compose" style={s.primaryBtn} disabled={loading} onPress={compose}><Text style={s.primaryBtnText}>整理小日記並分析</Text></TouchableOpacity>}
+      {daily?.workflow_status === 'pending_aggregation' && <TouchableOpacity testID="daily-compose" style={s.primaryBtn} disabled={loading} onPress={compose}><Text style={s.primaryBtnText}>整理當天小日記</Text></TouchableOpacity>}
       {daily && daily.workflow_status !== 'pending_aggregation' && <>
         <View style={[s.diaryBox, { minHeight: 280 }]}><TextInput testID="daily-content" style={[s.diaryInput, { minHeight: 260 }]} value={content} onChangeText={setContent} editable={!finalized && !loading} multiline maxLength={12000} /></View>
         <TouchableOpacity testID="daily-confirm" style={[s.primaryBtn, loading && { opacity: 0.65 }]} disabled={loading || !daily || daily.workflow_status === 'analyzed'} onPress={() => void save()}>{loading ? <ActivityIndicator color="white" /> : <Text style={s.primaryBtnText}>{daily.workflow_status === 'analyzed' ? '分析已完成' : finalized ? '繼續正式分析' : '確認定稿並分析'}</Text>}</TouchableOpacity>
