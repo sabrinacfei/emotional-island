@@ -19,7 +19,7 @@ import * as SecureStore from 'expo-secure-store';
 import {restoreSession,persistSession,clearSession} from './src/onDevice/authSession';
 import { CLOUD_API_URL, syncPhoneFeedback, saveFragmentOriginal, getMobile, post } from './src/onDevice/cloudClient';
 import { classifyOnPhone } from './src/onDevice/services';
-import { runLocalFeedback, runImmediateSupport, type LocalFeedback } from './src/onDevice/localFeedback';
+import { runLocalFeedback, recoverPrimaryEvidenceFailure, runImmediateSupport, type LocalFeedback } from './src/onDevice/localFeedback';
 import { trendPaths, type WeekDay, type WeekReview } from './src/onDevice/weekly';
 import { percentageScores, rankedEmotionScores } from './src/onDevice/emotionScores';
 import { completeDiaryExcerpts, emotionEvidence, isSourceExplanation } from './src/onDevice/emotionEvidence';
@@ -2132,7 +2132,8 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
       const entry = pending.find(saved => saved.kind === 'daily' && saved.date === date && saved.content === confirmed.final_content)
         ?? newPhoneDiary(username, confirmed.final_content, 'daily', date);
       await savePhoneDiary(entry);
-      const feedback = entry.result && (entry.result.status === 'local_safety'
+      const recovered = await recoverPrimaryEvidenceFailure(entry.content, entry.result);
+      const feedback = recovered ?? (entry.result && (entry.result.status === 'local_safety'
         || (entry.result.status === 'completed' && entry.result.classification_translation?.version === 'zh-en-faithful-v1'
           && ['emotion-evidence-v4','emotion-evidence-v5'].includes(entry.result.source_analysis_version || '')))
         ? entry.result : await runLocalFeedback(entry.content, async text => {
@@ -2146,7 +2147,7 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
               classification_translation:previous.classification_translation,risk_floor:previous.risk_level};
           }
           return classifyOnPhone(text,setProgress);
-        }, phoneSLM, setProgress);
+        }, phoneSLM, setProgress));
       const saved: PhoneDiary = { ...entry, result: feedback, syncStatus: 'pending' };
       await savePhoneDiary(saved);
       if (feedback.status === 'unavailable') {

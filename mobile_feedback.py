@@ -294,9 +294,8 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
             raise HTTPException(422, "此紀錄不接受正式情緒成因。")
         data.support.verify_evidence(data.content)
         if classification_translation and analysis:
-            dominant = max(analysis["probabilities"], key=analysis["probabilities"].get)
-            if data.support.source_analysis_version not in {"emotion-evidence-v4", "emotion-evidence-v5"} or not any(source.emotion == dominant for source in data.support.emotion_sources or []):
-                raise HTTPException(422, "主要分類情緒尚無中文原文支持，請重新核對分析。")
+            if data.support.source_analysis_version not in {"emotion-evidence-v4", "emotion-evidence-v5"}:
+                raise HTTPException(422, "情緒來源格式尚未支援中文原文核對。")
         support = data.support.model_dump()
         if data.support.emotion_sources is not None:
             support["emotion_sources"] = [source.model_dump(exclude_none=True, exclude_defaults=True) for source in data.support.emotion_sources]

@@ -129,7 +129,7 @@ class TranslatedClassificationTests(unittest.TestCase):
             if field=='hash':bad['classification']['trace']['input_sha256']=digest(TEXT)
             self.assertEqual(client.post('/mobile/emotions/on-device',json=bad).status_code,422)
 
-    def test_translated_commit_requires_supported_chinese_primary_and_keeps_translation(self):
+    def test_translated_commit_accepts_missing_primary_evidence_without_changing_scores(self):
         from test_mobile_feedback import TRACE,CONTEXT
         source=self.translation();data=fixture();data['trace']['input_sha256']=digest(source['text'])
         save=AsyncMock(return_value={"synced":True})
@@ -138,8 +138,9 @@ class TranslatedClassificationTests(unittest.TestCase):
         receipt=client.post('/mobile/emotions/on-device',json=dict(content=TEXT,date_label='2026-11-08',classification=data,translation=source)).json()['receipt_token']
         support=dict(status='completed',comfort='我聽見你的感受。',suggestions=[],blessing='',risk_level='none',response_mode='SUPPORT_MODE',safety_action='none',context=CONTEXT,generation=TRACE,source_analysis_version='emotion-evidence-v4',emotion_sources=[])
         body=dict(content=TEXT,date_label='2026-11-08',entry_id='translated_daily_123',kind='daily',receipt_token=receipt,support=support)
-        self.assertEqual(client.post('/mobile/diaries',json=body).status_code,422)
-        save.assert_not_called()
+        self.assertEqual(client.post('/mobile/diaries',json=body).status_code,200)
+        self.assertEqual(save.await_args.args[2]['emotion_sources'],[])
+        self.assertEqual(save.await_args.args[2]['scores'],data['analysis']['scores'])
         dominant=max(data['analysis']['probabilities'],key=data['analysis']['probabilities'].get)
         support['emotion_sources']=[dict(emotion=dominant,explanation='明天的事情讓我擔心。' if dominant=='Fear' else '完成報告讓我開心。',evidence=TEXT)]
         self.assertEqual(client.post('/mobile/diaries',json=body).status_code,200)

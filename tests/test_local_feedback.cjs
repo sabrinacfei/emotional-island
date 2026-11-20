@@ -318,13 +318,13 @@ test('classification service sends only faithful English into the unchanged clas
  assert.equal(result.classification_translation.segments[0].source,raw);
  assert.equal(result.classification_translation.version,'zh-en-faithful-v1');
 });
-test('a translated dominant emotion without Chinese evidence stays incomplete and keeps raw scores',async()=>{
+test('a translated dominant emotion without Chinese evidence completes with unchanged scores and no invented source',async()=>{
  for(const supported of [false,true]) {
   const h=setup({classification:{classification_translation:{version:'zh-en-faithful-v1'}}});
   h.slm.causes=async()=>({output:{causes:[],emotion_sources:supported?[{emotion:'Sadness',explanation:'被批評後覺得委屈。',evidence:'覺得有點委屈'}]:[],source_analysis_version:'emotion-evidence-v4'}});
   const result=await runLocalFeedback(diary,h.classify,h.slm);
-  assert.equal(result.status,supported?'completed':'unavailable');assert.deepEqual(result.scores,scores);
-  if(!supported)assert.equal(result.failure_stage,'causes_validation');
+  assert.equal(result.status,'completed');assert.deepEqual(result.scores,scores);
+  assert.equal(result.emotion_sources.length,supported?1:0);
  }
 });
 test('failed coping is shown as a sourced supplement and never as a buffer',async()=>{
@@ -574,14 +574,14 @@ test('login session survives app restarts until explicit logout without storing 
  values.set(AUTH_SESSION_KEY,'broken-json');assert.equal(await restoreSession(storage),null);
 });
 
-test('one-pass analysis still requires Chinese evidence for the translated primary emotion without another model call',async()=>{
+test('one-pass analysis retains verified events even when they differ from the translated primary',async()=>{
  const raw='有人插隊，我很生氣。';const output={...assessment,comfort:'遭遇插隊的不公平感與不滿可以被理解。',suggestions:[],blessing:'',events:[{sentence_ids:[1],emotion:'Anger',feeling:'很生氣',category:'stressor',topic:'排隊被插隊',explanation:'遭人插隊，引起不公平感與憤怒。',outcome:'unclear'}]};
  for(const primary of ['Anger','Joy']){
   const distribution=Object.fromEntries(['Joy','Sadness','Anger','Fear','Anticipation','Surprise','Disgust','Trust'].map(e=>[e,e===primary?100:0]));
   const h=setup({classification:{scores:distribution,analysis:{...analysis,probabilities:Object.fromEntries(Object.keys(distribution).map(e=>[e,e===primary?1:0])),top_3:[{emotion:primary,probability:1,score:100}]},classification_translation:{version:'zh-en-faithful-v1'}}});
   let count=0;h.slm.analyzeDaily=async()=>{count++;return run(output);};
   const result=await runLocalFeedback(raw,h.classify,h.slm);
-  assert.equal(count,1);assert.equal(result.status,primary==='Anger'?'completed':'unavailable');
+  assert.equal(count,1);assert.equal(result.status,'completed');assert.deepEqual(result.emotion_sources.map(s=>s.emotion),['Anger']);
   assert.deepEqual(result.scores,distribution);
  }
 });
@@ -711,4 +711,34 @@ test('display rounding totals one hundred without changing native probabilities'
  const frozen=JSON.stringify(raw),display=percentageScores(raw);
  assert.equal(Object.values(display).reduce((s,n)=>s+n,0),100);
  assert.equal(JSON.stringify(raw),frozen);assert.equal(display.Anger,40);
+});
+
+test('one daily SLM call retains a sourced secondary emotion when the primary has no evidence',async()=>{
+ const raw='朋友陪伴讓心情開心。試著戴耳機但仍然很煩躁，心情沒有改善。';
+ const distribution={...scores,Joy:49,Sadness:0,Anger:0,Fear:0,Surprise:51};
+ const native={...analysis,probabilities:Object.fromEntries(Object.entries(distribution).map(([k,v])=>[k,v/100]))};
+ const h=setup({classification:{scores:distribution,analysis:native,classification_translation:{version:'zh-en-faithful-v1'}}});
+ let calls=0;h.slm.analyzeDaily=async()=>{calls++;return run({format:'evidence-first-v1',risk_level:'none',risk_evidence:[],events:[
+ {sentence_ids:[1],emotion:'Joy',category:'joy',topic:'朋友陪伴',explanation:'朋友陪伴帶來開心。',outcome:'unclear'},
+ {sentence_ids:[2],emotion:'Anger',category:'buffer',topic:'戴耳機',explanation:'戴耳機後仍煩躁，心情未改善。',outcome:'not_improved'}]});};
+ const result=await runLocalFeedback(raw,h.classify,h.slm);
+ assert.equal(result.status,'completed');assert.equal(calls,1);assert.deepEqual(result.scores,distribution);assert.deepEqual(result.classifier_analysis,native);
+ assert.deepEqual(result.emotion_sources.map(s=>s.emotion),['Joy','Anger']);
+ assert.equal(result.emotion_sources.some(s=>s.emotion==='Surprise'),false);
+ assert.equal(result.causes.some(c=>c.type==='buffer'),false);
+});
+test('only an old primary-evidence rejection can recover without invoking a model',async()=>{
+ const {recoverPrimaryEvidenceFailure}=load('localFeedback');
+ const raw='朋友陪伴讓心情開心。';
+ const generated=run({format:'evidence-first-v1',risk_level:'none',risk_evidence:[],events:[{sentence_ids:[1],emotion:'Joy',category:'joy',topic:'朋友陪伴',explanation:'朋友陪伴帶來開心。',outcome:'unclear'}]});
+ const translated={version:'zh-en-faithful-v1',segments:[{source:raw,english:'Friends made me happy.'}]};
+ const trace={execution:'on-device',runtime:'coreml',model:'modernbert',model_sha256:'a'.repeat(64),tokenizer_sha256:'b'.repeat(64),input_sha256:'c'.repeat(64),duration_ms:3,load_ms:1};
+ const previous={status:'unavailable',failure_reason:'Dominant classification lacks supporting Chinese evidence',generation:generated.trace,
+ scores,classifier_analysis:analysis,classifier_trace:trace,classification_translation:translated,receipt_token:'receipt',risk_level:'none'};
+ const recovered=await recoverPrimaryEvidenceFailure(raw,previous);
+ assert.equal(recovered.status,'completed');assert.deepEqual(recovered.scores,scores);assert.deepEqual(recovered.generation,generated.trace);
+ assert.equal(recovered.emotion_sources[0].emotion,'Joy');
+ assert.equal(await recoverPrimaryEvidenceFailure(raw+'changed',previous),null);
+ assert.equal(await recoverPrimaryEvidenceFailure(raw,{...previous,failure_reason:'Unverifiable cause'}),null);
+ assert.equal(await recoverPrimaryEvidenceFailure(raw,{...previous,status:'completed'}),null);
 });

@@ -210,13 +210,10 @@ def router(db, current_user, serialize):
         if record.get("source_review"):
             raise HTTPException(409, "人工核對結果已保存，請先檢視修訂紀錄。")
         if record.get("classification_translation"):
-            probabilities = (record.get("classifier_analysis") or {}).get("probabilities") or record.get("scores") or {}
-            dominant = max(probabilities, key=probabilities.get) if probabilities else None
-            if data.source_analysis_version not in {"emotion-evidence-v4", "emotion-evidence-v5"} or not any(source.emotion == dominant for source in data.emotion_sources):
-                raise HTTPException(422, "主要分類情緒尚無中文原文支持，請重新核對分析。")
+            if data.source_analysis_version not in {"emotion-evidence-v4", "emotion-evidence-v5"}:
+                raise HTTPException(422, "情緒來源格式尚未支援中文原文核對。")
         causes = [item.model_dump() for item in data.causes]
-        # Full source rechecks clear stale claims even when a category is empty.
-        # Older clients submit partial additions, so retain their legacy behavior.
+        # Empty categories are valid; never retain old unsupported explanations.
         if data.source_analysis_version not in {"emotion-evidence-v3", "emotion-evidence-v4", "emotion-evidence-v5"}:
             categories = {item["type"] for item in causes}
             causes.extend(c for c in record.get("causes", [])

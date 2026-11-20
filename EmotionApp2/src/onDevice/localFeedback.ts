@@ -195,11 +195,8 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
     if(!model || generation!.sha256!==model.sha256 || generation!.execution!=='on-device' || generation!.tokens_predicted<=0 || !generation!.raw_text)throw Error('Invalid native generation result');
     if (classificationTranslation && analysis) {
       stage = 'causes_validation';
-      const dominant = analysis.top_3?.[0]?.emotion
-        ?? EMOTIONS.reduce((best, emotion) => analysis!.probabilities[emotion] > analysis!.probabilities[best] ? emotion : best);
-      if (!['emotion-evidence-v4','emotion-evidence-v5'].includes(sources.source_analysis_version ?? '')
-        || !sources.emotion_sources?.some(source => source.emotion === dominant)) {
-        throw new Error('Dominant classification lacks supporting Chinese evidence');
+      if (!['emotion-evidence-v4','emotion-evidence-v5'].includes(sources.source_analysis_version ?? '')) {
+        throw new Error('Unsupported Chinese evidence format');
       }
     }
     return { ...base(), ...support, ...sources, inference_source: model.inferenceSource, status: 'completed', safety_check_status: 'screened', context: assessment.context };
@@ -218,3 +215,19 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
 /** Fragment support is fully local and never has a classifier dependency or fabricated scores. */
 export const runImmediateSupport = (diary: string, slm: PhoneSLM, progress?: (stage: string) => void) =>
   runLocalFeedback(diary, async () => { throw new Error('Fragment classification is forbidden'); }, slm, progress, true);
+
+/** Revalidate a completed native generation rejected only by the old primary-evidence gate.
+ * Replays existing outputs through the ordinary validators; invokes no model. */
+export async function recoverPrimaryEvidenceFailure(diary: string, previous: LocalFeedback | undefined): Promise<LocalFeedback | null> {
+  if (previous?.status !== 'unavailable' || previous.failure_reason !== 'Dominant classification lacks supporting Chinese evidence'
+      || !previous.generation || !previous.classifier_analysis || !previous.classifier_trace || !previous.scores
+      || previous.classification_translation?.segments.map(segment => segment.source).join('') !== diary) return null;
+  let output: unknown;
+  try { output = JSON.parse(previous.generation.raw_text); } catch { return null; }
+  const forbidden = async (): Promise<SLMRun> => { throw new Error('Recovery must not invoke a model'); };
+  const result = await runLocalFeedback(diary, async () => ({backend:'modernbert', classification_available:true,
+    scores:previous.scores!, analysis:previous.classifier_analysis!, classifier_trace:previous.classifier_trace,
+    classification_translation:previous.classification_translation, receipt_token:previous.receipt_token, risk_floor:previous.risk_level}),
+    {analyzeDaily:async () => ({output,trace:previous.generation!}),assess:forbidden,respond:forbidden});
+  return result.status === 'completed' ? result : null;
+}
