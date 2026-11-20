@@ -27,7 +27,7 @@ import { FeedbackTouchable as TouchableOpacity, InteractionFeedbackProvider, sel
 import { Alert, DismissibleModal, NoticeProvider } from './src/ui/Overlay';
 import { ensureNotificationPermission, notificationStatus, sendLocalTestNotification } from './src/notifications';
 import { fetchWithTimeout } from './src/network';
-import { phoneSLM, composePhoneDaily, generateDailySources } from './src/onDevice/qwen/runtime';
+import { phoneSLM, composePhoneDaily } from './src/onDevice/qwen/runtime';
 import { PHONE_MODEL } from './src/onDevice/qwen/storage';
 import { SafetyResources } from './src/onDevice/PhoneModelSetup';
 import { PhoneModelPreparationScreen } from './src/onDevice/PhoneModelPreparationScreen';
@@ -808,7 +808,7 @@ function WelcomeScreen({ onStart, onLogin }: any) {
           </View>
           <Text style={s.welcomeSlogan}>每一段心情，{'\n'}都值得被好好安放。</Text>
         </Animated.View>
-        <TouchableOpacity style={s.welcomeStartBtn} onPress={onStart}>
+        <TouchableOpacity testID="welcome-start" style={s.welcomeStartBtn} onPress={onStart}>
           <Text style={s.welcomeStartText}>開始旅程</Text>
         </TouchableOpacity>
         <TouchableOpacity testID="welcome-login" onPress={onLogin} style={s.welcomeLoginLink}>
@@ -1852,8 +1852,6 @@ function DailyDiaryViewScreen({ navigation, route }: any) {
 // ─────────────────────────────────────────────────────────
 function DayAnalysisScreen({ navigation, route }: any) {
   const { token } = useContext(AuthContext);
-  const [refreshingSources, setRefreshingSources] = useState(false);
-  const [sourceStatus, setSourceStatus] = useState('');
   const { date, record } = route.params || {};
   const rec: TreeRecord | null = record || null;
   const dominantMood = rec?.mood || 'Joy';
@@ -1861,25 +1859,6 @@ function DayAnalysisScreen({ navigation, route }: any) {
   const scores = norm(rec?.scores || {});
   const top = getTopEmotions(scores, 3, rec?.raw);
   const dailyContent = rec?.raw?.final_content || rec?.raw?.daily_content || rec?.raw?.dailyContent;
-  const canRefreshSources = rec?.raw?.processing_mode === 'phone_slm_v1' && rec.raw.classification_available === true
-    && rec.raw.risk_level !== 'high' && dailyContent && !rec.raw.source_review;
-
-  const refreshSources = async () => {
-    if (!rec || !canRefreshSources || refreshingSources) return;
-    setRefreshingSources(true);
-    setSourceStatus('正在手機重新核對情緒來源…');
-    try {
-      const details = await generateDailySources(dailyContent, rec.scores || {});
-      const updated = await post(BASE_URL, `/mobile/daily/${rec.date}/refresh-sources`, token, { content: dailyContent, ...details });
-      navigation.setParams({ record: toTreeRecord(updated) });
-      setSourceStatus('已同步重新核對的情緒來源。');
-    } catch {
-      setSourceStatus('情緒來源尚未同步，可稍後重試。');
-    } finally {
-      setRefreshingSources(false);
-    }
-  };
-
   return (
     <ScreenBg source={require('./assets/Tree_of_the_Day.png')}>
       <ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 56, paddingBottom: 90 }}>
@@ -1887,8 +1866,6 @@ function DayAnalysisScreen({ navigation, route }: any) {
         <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>
           {date || rec?.date}　心情分析
         </Text>
-        {rec?.raw?.data_origin === 'generated-example' && <Text style={[s.mini, { color: C.sub, textAlign: 'center', marginTop: 10 }]}>示範日記</Text>}
-        {rec?.raw?.source_review?.origin === 'human-reviewed' && <Text testID="analysis-review-origin" style={[s.mini,{color:C.sub,textAlign:'center',marginTop:6}]}>人工核對結果</Text>}
 
         {/* 主要情緒卡片 */}
         <View style={[s.resultCard, { flexDirection: 'row', alignItems: 'center', marginTop: 30 }]}>
@@ -1897,7 +1874,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
             <Text style={[s.label, { fontSize: 20, lineHeight: 30 }]}>主要情緒</Text>
             {top.map(([k, v]) => (
               <Text key={k} style={[s.body, { color: EC[k]?.c || C.text, fontSize: 19, lineHeight: 31 }]}>
-                {EC[k]?.l || k}　{v}%{rec?.raw?.source_review?.annotations?.[k]?.level==='inferred'?'（推論）':!emotionEvidence(rec?.raw,k).length ? '（未確認）' : ''}
+                {EC[k]?.l || k}　{v}%
               </Text>
             ))}
           </View>
@@ -1912,13 +1889,8 @@ function DayAnalysisScreen({ navigation, route }: any) {
 
         <View style={s.resultCard}>
           <Text style={[s.label, { marginBottom: 12 }]}>壓力來源、情緒緩衝、快樂來源</Text>
-          {rec?.raw?.source_review?.origin==='human-reviewed' && <Text testID="source-review-origin" style={[s.mini,{color:C.sub,marginBottom:12}]}>人工核對結果</Text>}
           <TagReasonSection raw={rec?.raw} />
-          {canRefreshSources && <TouchableOpacity testID="refresh-daily-sources" style={[s.primaryBtn, { marginTop: 16 }]}
-            disabled={refreshingSources} onPress={refreshSources}>
-            <Text style={s.primaryBtnText}>重新核對情緒來源</Text>
-          </TouchableOpacity>}
-          {!!sourceStatus && <Text testID="source-refresh-status" accessibilityLiveRegion="polite" style={[s.mini, { marginTop: 10 }]}>{sourceStatus}</Text>}
+
         </View>
         {!!dailyContent && <View style={s.resultCard}>
           <Text style={[s.label, { marginBottom: 12 }]}>當天完整日記</Text>
@@ -2143,16 +2115,17 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
         content: draft, source_ids: data.sources.map((x: any) => x.id),
         ...(PHONE_MODEL.inferenceSource === 'phone-qwen3.5-2b' ? { draft_source: PHONE_MODEL.inferenceSource } : {}),
       });
-      await refresh(); setProgress('請確認事件與感受是否符合你的原意。');
+      await refresh(); await save(draft);
     } catch { setProgress('整理尚未完成，原始小日記仍保留，請稍後重試。'); }
     finally { setLoading(false); }
   };
-  const save = async () => {
-    if (!content.trim()) return;
+  const save = async (preparedContent?: string) => {
+    const analysisContent = typeof preparedContent === 'string' ? preparedContent : content;
+    if (!analysisContent.trim()) return;
     setLoading(true); setProgress('小島精靈正在思考...');
     try {
       // This transition is persisted before any classifier request, including retries.
-      const confirmed = await post(BASE_URL, `/mobile/daily/${date}/confirm`, token, { content });
+      const confirmed = await post(BASE_URL, `/mobile/daily/${date}/confirm`, token, { content: analysisContent });
       setDaily(confirmed);
       if (confirmed.workflow_status === 'analyzed') { setProgress('此日期的分析已完成。'); return; }
       const pending = await pendingPhoneDiaries(username);
@@ -2199,14 +2172,14 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
     <ScreenBg source={require('./assets/journal.png')}><ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 58, paddingBottom: 90 }}>
       <BackButton onPress={() => navigation.goBack()} />
       <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>{date} 日記</Text>
-      <Text style={[s.body, { marginTop: 24 }]}>{daily?.data_origin === 'generated-example' ? '示範日記・' : ''}{finalized ? '日記已定稿' : '先整理並確認內容，再進行情緒分析。'}</Text>
+      <Text style={[s.body, { marginTop: 24 }]}>{finalized ? '日記已定稿' : '先整理並確認內容，再進行情緒分析。'}</Text>
       {daily?.confirmation_deadline && <Text style={s.mini}>確認截止：{new Date(daily.confirmation_deadline).toLocaleString('zh-TW')}</Text>}
       {!!progress && <Text testID="daily-progress" accessibilityLiveRegion="polite" style={s.body}>{progress}</Text>}
       {!daily && !sources.length && !progress && <Text style={s.body}>這一天還沒有小日記。</Text>}
-      {daily?.workflow_status === 'pending_aggregation' && <TouchableOpacity testID="daily-compose" style={s.primaryBtn} disabled={loading} onPress={compose}><Text style={s.primaryBtnText}>整理當天小日記</Text></TouchableOpacity>}
+      {daily?.workflow_status === 'pending_aggregation' && <TouchableOpacity testID="daily-compose" style={s.primaryBtn} disabled={loading} onPress={compose}><Text style={s.primaryBtnText}>整理小日記並分析</Text></TouchableOpacity>}
       {daily && daily.workflow_status !== 'pending_aggregation' && <>
         <View style={[s.diaryBox, { minHeight: 280 }]}><TextInput testID="daily-content" style={[s.diaryInput, { minHeight: 260 }]} value={content} onChangeText={setContent} editable={!finalized && !loading} multiline maxLength={12000} /></View>
-        <TouchableOpacity testID="daily-confirm" style={[s.primaryBtn, loading && { opacity: 0.65 }]} disabled={loading || !daily || daily.workflow_status === 'analyzed'} onPress={save}>{loading ? <ActivityIndicator color="white" /> : <Text style={s.primaryBtnText}>{daily.workflow_status === 'analyzed' ? '分析已完成' : finalized ? '繼續正式分析' : '確認定稿並分析'}</Text>}</TouchableOpacity>
+        <TouchableOpacity testID="daily-confirm" style={[s.primaryBtn, loading && { opacity: 0.65 }]} disabled={loading || !daily || daily.workflow_status === 'analyzed'} onPress={() => void save()}>{loading ? <ActivityIndicator color="white" /> : <Text style={s.primaryBtnText}>{daily.workflow_status === 'analyzed' ? '分析已完成' : finalized ? '繼續正式分析' : '確認定稿並分析'}</Text>}</TouchableOpacity>
       </>}
       <Text style={[s.label, { marginTop: 24 }]}>原始小日記（{sources.length} 則）</Text>
       {sources.map(x => <View key={x.id} style={s.resultCard}><Text style={s.mini}>{new Date(x.timestamp).toLocaleTimeString('zh-TW')}</Text><Text style={s.body}>{x.content}</Text></View>)}
@@ -3094,7 +3067,7 @@ function AppContent() {
     void restoreSession(SecureStore).then(saved=>{
       if(!mounted||!saved)return;
       setToken(saved.token);setUsernameState(saved.username);setAvatarState(saved.avatar);
-      setAfterModelSetup('main');setEntry('modelSetup');
+      setAfterModelSetup('main');setEntry('welcome');
     }).catch(()=>undefined).finally(()=>{if(mounted)setSessionReady(true);});
     return ()=>{mounted=false;};
   },[]);
@@ -3166,11 +3139,11 @@ function AppContent() {
     return <View style={[s.center, { backgroundColor: C.bg }]}><ActivityIndicator color={C.accent} /></View>;
   }
 
-  if (!token && entry === 'welcome') {
+  if (entry === 'welcome') {
     return (
       <WelcomeScreen
-        onStart={() => { setAuthMode('register'); setEntry('auth'); }}
-        onLogin={() => { setAuthMode('login'); setEntry('auth'); }}
+        onStart={() => { if(token){setAfterModelSetup('main');setEntry('modelSetup');}else{setAuthMode('register');setEntry('auth');} }}
+        onLogin={() => { if(token){setAfterModelSetup('main');setEntry('modelSetup');}else{setAuthMode('login');setEntry('auth');} }}
       />
     );
   }
