@@ -12,7 +12,6 @@ from daily_workflow import DailyWorkflow
 from mobile_feedback import EmotionSource, SourceDetails, daily_source_fields
 from slm_schemas import Scores
 from reviewed_sources import register_review_routes, within_demo_scope
-from reviewed_sources import register_review_routes, within_demo_scope
 
 
 class Fragment(BaseModel):
@@ -84,7 +83,6 @@ def weekly_summary(start, analyses, closed=True):
 def router(db, current_user, serialize):
     api = APIRouter(prefix="/mobile", tags=["Daily workflow"])
     workflow = DailyWorkflow(db)
-    register_review_routes(api, db, current_user, serialize, workflow)
 
     def valid_day(day):
         try:
