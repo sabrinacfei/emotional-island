@@ -611,3 +611,14 @@ test('a translation failure records its real stage and preserves a resumable dra
  const result=await runLocalFeedback(diary,async()=>{throw failure;},h.slm);
  assert.equal(result.status,'unavailable');assert.equal(result.failure_stage,'translation');assert.equal(result.failure_reason,'App 已離開前景。');assert.equal(h.calls.length,0);
 });
+
+
+test('direct joy remains a positive source without claiming relief from previous distress',()=>{
+ const {parseDailyAnalysis}=load('qwen/dailyAnalysis');
+ const raw='今天朋友稱讚作品，讓我覺得很開心。';
+ const value={risk_level:'none',risk_evidence:[],summary:'朋友稱讚作品。',change:'獲得肯定而開心。',comfort:'作品獲得朋友肯定，這份開心值得珍惜。',events:[{sentence_ids:[1],emotion:'Joy',category:'buffer',topic:'作品獲得肯定',explanation:'作品得到稱讚，帶來開心。',outcome:'improved'}]};
+ const parsed=parseDailyAnalysis(value,raw);
+ assert.equal(parsed.sources.causes[0].type,'joy');
+ assert.equal(parsed.sources.causes.some(c=>c.type==='buffer'),false);
+ assert.equal(parsed.sources.causes[0].evidence,raw);
+});

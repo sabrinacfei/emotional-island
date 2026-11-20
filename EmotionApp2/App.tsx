@@ -1860,7 +1860,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
   const top = getTopEmotions(scores, 3, rec?.raw);
   const dailyContent = rec?.raw?.final_content || rec?.raw?.daily_content || rec?.raw?.dailyContent;
   const canRefreshSources = rec?.raw?.processing_mode === 'phone_slm_v1' && rec.raw.classification_available === true
-    && rec.raw.risk_level !== 'high' && dailyContent && !['emotion-evidence-v4','emotion-evidence-v5'].includes(rec.raw.source_analysis_version);
+    && rec.raw.risk_level !== 'high' && dailyContent;
 
   const refreshSources = async () => {
     if (!rec || !canRefreshSources || refreshingSources) return;
