@@ -1,5 +1,6 @@
 import type { ClassificationTranslation } from './classificationTranslation';
 import { isSourceExplanation } from './emotionEvidence';
+import {parseDailyAnalysis} from './qwen/dailyAnalysis';
 import { decision, ruleRisk, validateScores, EMOTIONS, type Scores, type Risk, type Context, type Decision } from './flow';
 import { PHONE_MODELS, type PhoneModel, type PhoneModelId } from './qwen/config';
 
@@ -14,7 +15,7 @@ export type Support = { comfort: string; suggestions: string[]; blessing: string
 export type EmotionCause = { type: 'stressor' | 'buffer' | 'joy'; topic: string; explanation: string; evidence: string; emotions: string[] };
 export type EmotionSource = { emotion: string; explanation: string; evidence: string;
   coping_note?: string; additional_evidence?: string[] };
-export type DailySources = { causes: EmotionCause[]; emotion_sources?: EmotionSource[]; source_analysis_version?: 'emotion-evidence-v2' | 'emotion-evidence-v3' | 'emotion-evidence-v4' };
+export type DailySources = { causes: EmotionCause[]; emotion_sources?: EmotionSource[]; source_analysis_version?: 'emotion-evidence-v2' | 'emotion-evidence-v3' | 'emotion-evidence-v4' | 'emotion-evidence-v5' };
 export type GenerationTrace = { execution: 'on-device'; runtime: string; model: PhoneModelId; sha256: string;
   tokens_predicted: number; duration_ms: number; tokens_per_second: number | null; stopped_eos: boolean; raw_text: string };
 export type SLMRun = { output: unknown; trace: GenerationTrace };
@@ -29,10 +30,11 @@ export type LocalFeedback = Support & Decision & {
   classification_translation?: ClassificationTranslation;
   causes?: EmotionCause[];
   emotion_sources?: EmotionSource[];
-  source_analysis_version?: 'emotion-evidence-v2' | 'emotion-evidence-v3' | 'emotion-evidence-v4';
+  source_analysis_version?: 'emotion-evidence-v2' | 'emotion-evidence-v3' | 'emotion-evidence-v4' | 'emotion-evidence-v5';
   failure_stage?: 'classification' | 'assessment' | 'assessment_validation' | 'support' | 'support_validation' | 'causes' | 'causes_validation';
 };
 export interface PhoneSLM {
+  analyzeDaily?(input: {diary:string; emotion_scores?:Scores; emotion_probabilities?:Scores; safety:Decision}): Promise<SLMRun>;
   assess(input: { diary: string; emotion_scores?: Scores; emotion_probabilities?: Scores; safety: Decision }): Promise<SLMRun>;
   respond(input: { diary: string; emotion_scores?: Scores; emotion_probabilities?: Scores; assessment: ContextAssessment; safety: Decision }): Promise<SLMRun>;
   causes?(input: { diary: string; emotion_probabilities: Scores; emotion_scores?: Scores }): Promise<{ output: unknown }>;
@@ -74,7 +76,7 @@ export function parseDailySources(input: unknown, diary: string): DailySources {
     return { emotion: source.emotion, explanation: text(source.explanation, 180), evidence,
       ...(note ? { coping_note: note } : {}), ...(source.additional_evidence?.length ? { additional_evidence: source.additional_evidence } : {}) };
   });
-  return { causes, emotion_sources, ...(['emotion-evidence-v2', 'emotion-evidence-v3', 'emotion-evidence-v4'].includes(value.source_analysis_version ?? '') ? { source_analysis_version: value.source_analysis_version } : {}) };
+  return { causes, emotion_sources, ...(['emotion-evidence-v2', 'emotion-evidence-v3', 'emotion-evidence-v4', 'emotion-evidence-v5'].includes(value.source_analysis_version ?? '') ? { source_analysis_version: value.source_analysis_version } : {}) };
 }
 
 const contextKeys = ['event_context', 'emotional_context', 'main_concern', 'coping_already_tried', 'support_preference'] as const;
@@ -152,11 +154,23 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
       || Math.abs(EMOTIONS.reduce((n, k) => n + p[k], 0) - 1) > 1e-4 || analysis.truncated || !analysis.chunk_count) throw new Error('Incomplete diary probabilities');
     }
     const emotionInput = scores && analysis ? { emotion_scores: scores, emotion_probabilities: analysis.probabilities } : {};
+    let assessment:ContextAssessment, support:Support;
+    let sources:DailySources={causes:[]};
+    if(!immediate && slm.analyzeDaily){
+      progress('正在手機分析事件、情緒變化與來源');
+      stage='assessment';
+      const generated=await slm.analyzeDaily({diary,...emotionInput,safety});
+      stage='causes_validation';
+      const parsed=parseDailyAnalysis(generated.output,diary);
+      assessment=parsed.assessment;support=parsed.support;sources=parsed.sources;generation=generated.trace;
+      safety=decision(safety.risk_level,assessment.risk_level);
+      if(safety.risk_level==='high')return {...base(),...fixedSafety(safety),inference_source:'fixed-safety',status:'local_safety',safety_check_status:'screened',context:assessment.context};
+    } else {
     progress('正在手機理解日記與判斷回應模式');
     stage = 'assessment';
     const assessed = await slm.assess({ diary, ...emotionInput, safety });
     stage = 'assessment_validation';
-    const assessment = parseAssessment(assessed.output, diary);
+    assessment = parseAssessment(assessed.output, diary);
     safety = decision(safety.risk_level, assessment.risk_level);
     if (safety.risk_level === 'high') return { ...base(), ...fixedSafety(safety), inference_source: 'fixed-safety', status: 'local_safety', safety_check_status: 'screened', context: assessment.context };
     progress('正在手機產生回饋');
@@ -164,11 +178,10 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
     const responded = await slm.respond({ diary, ...emotionInput, assessment, safety });
     stage = 'support_validation';
     generation = responded.trace;
-    const support = parseSupport(responded.output, assessment);
+    support = parseSupport(responded.output, assessment);
     const model = PHONE_MODELS[generation.model];
     if (!model || generation.sha256 !== model.sha256 || generation.execution !== 'on-device'
       || generation.tokens_predicted <= 0 || !generation.raw_text) throw new Error('Invalid native generation result');
-    let sources: DailySources = { causes: [] };
     if (!immediate && slm.causes && analysis) {
       stage = 'causes';
       progress('正在手機整理情緒成因');
@@ -176,11 +189,14 @@ export async function runLocalFeedback(diary: string, classify: (text: string) =
       stage = 'causes_validation';
       sources = parseDailySources(found.output, diary);
     }
+    }
+    const model=PHONE_MODELS[generation!.model];
+    if(!model || generation!.sha256!==model.sha256 || generation!.execution!=='on-device' || generation!.tokens_predicted<=0 || !generation!.raw_text)throw Error('Invalid native generation result');
     if (classificationTranslation && analysis) {
       stage = 'causes_validation';
       const dominant = analysis.top_3?.[0]?.emotion
         ?? EMOTIONS.reduce((best, emotion) => analysis!.probabilities[emotion] > analysis!.probabilities[best] ? emotion : best);
-      if (sources.source_analysis_version !== 'emotion-evidence-v4'
+      if (!['emotion-evidence-v4','emotion-evidence-v5'].includes(sources.source_analysis_version ?? '')
         || !sources.emotion_sources?.some(source => source.emotion === dominant)) {
         throw new Error('Dominant classification lacks supporting Chinese evidence');
       }

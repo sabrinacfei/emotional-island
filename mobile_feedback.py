@@ -66,7 +66,7 @@ class NativeGeneration(BaseModel):
     runtime: Literal["llama.rn@0.13.0-rc.9"]
     model: str
     sha256: str
-    tokens_predicted: int = Field(ge=1, le=528)
+    tokens_predicted: int = Field(ge=1, le=2048)
     duration_ms: float = Field(gt=0)
     tokens_per_second: float | None
     stopped_eos: bool
@@ -112,14 +112,14 @@ class SourceDetails(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     causes: list[Cause] = Field(default_factory=list, max_length=3)
     emotion_sources: list[EmotionSource] | None = Field(default=None, max_length=8)
-    source_analysis_version: Literal["emotion-evidence-v2", "emotion-evidence-v3", "emotion-evidence-v4"] | None = None
+    source_analysis_version: Literal["emotion-evidence-v2", "emotion-evidence-v3", "emotion-evidence-v4", "emotion-evidence-v5"] | None = None
 
     def verify_evidence(self, content: str):
         for source in self.emotion_sources or []:
             if ((source.coping_note and (not source.additional_evidence or UNSUPPORTED_SOURCE.search(source.coping_note)))
                 or any(not 2 <= len(quote.strip()) <= 600 or quote not in content for quote in source.additional_evidence)):
                 raise HTTPException(422, "調適補充說明缺少可核對的中文原文。")
-        if self.source_analysis_version in {"emotion-evidence-v3", "emotion-evidence-v4"} and any(
+        if self.source_analysis_version in {"emotion-evidence-v3", "emotion-evidence-v4", "emotion-evidence-v5"} and any(
             (item.type == "joy" and not set(item.emotions) & {"Joy", "Anticipation"})
             or (item.type == "stressor" and not set(item.emotions) & {"Anger", "Disgust", "Fear", "Sadness"})
             for item in self.causes
@@ -294,7 +294,7 @@ def router(current_user, save_entry, secret: str, classifier=None, require_final
         data.support.verify_evidence(data.content)
         if classification_translation and analysis:
             dominant = max(analysis["probabilities"], key=analysis["probabilities"].get)
-            if data.support.source_analysis_version != "emotion-evidence-v4" or not any(source.emotion == dominant for source in data.support.emotion_sources or []):
+            if data.support.source_analysis_version not in {"emotion-evidence-v4", "emotion-evidence-v5"} or not any(source.emotion == dominant for source in data.support.emotion_sources or []):
                 raise HTTPException(422, "主要分類情緒尚無中文原文支持，請重新核對分析。")
         support = data.support.model_dump()
         if data.support.emotion_sources is not None:

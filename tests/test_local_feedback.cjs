@@ -546,3 +546,55 @@ test('long mixed diaries retrieve late emotion evidence within bounded passages'
  assert.equal(result.emotion_sources[0].evidence,'同事肯定我的努力，我有點意外。');
  assert.deepEqual(parseSourceEmotionStates(stateOutput('我真的都沒事嗎？','Fear').output,'我真的都沒事嗎？'),[]);
 });
+
+test('daily workflow uses exactly one SLM analysis without separate assessment, support or source calls',async()=>{
+ const raw='今天有人插隊，我很生氣。試著戴耳機後仍無法專心，心情沒有改善。';
+ const output={...assessment,context:{...assessment.context,event_context:'遭人插隊。',emotional_context:'插隊引起生氣，戴耳機後未改善。'},comfort:'排隊秩序被打亂，感到不平衡和生氣是可以理解的。即使試過戴耳機，煩躁也沒有立刻離開，這些感受仍值得被看見。',suggestions:[],blessing:'',events:[
+  {sentence_ids:[1],emotion:'Anger',feeling:'很生氣',category:'stressor',topic:'遭人插隊',explanation:'遭人插隊破壞秩序，引起不公平感與憤怒。',outcome:'unclear'},
+  {sentence_ids:[2],emotion:'Other',feeling:'心情沒有改善',category:'buffer',topic:'戴耳機',explanation:'嘗試戴耳機但仍無法專心，情緒沒有改善。',outcome:'not_improved'}]};
+ const h=setup();let calls=0;h.slm.analyzeDaily=async input=>{calls++;assert.equal(input.diary,raw);return run(output);};
+ h.slm.assess=h.slm.respond=h.slm.causes=async()=>{throw Error('Repeated SLM call forbidden');};
+ const result=await runLocalFeedback(raw,h.classify,h.slm);
+ assert.equal(result.status,'completed');assert.equal(calls,1);assert.equal(result.source_analysis_version,'emotion-evidence-v5');
+ assert.deepEqual(result.scores,scores);assert.equal(result.causes.length,1);assert.equal(result.causes[0].type,'stressor');
+ assert.equal(result.causes[0].explanation,output.events[0].explanation);assert.equal(result.emotion_sources[0].evidence,'今天有人插隊，我很生氣。');
+});
+test('one-pass parser rejects fabricated or first-person source descriptions and does not turn failed coping into a buffer',()=>{
+ const {parseDailyAnalysis}=load('qwen/dailyAnalysis');const raw='同事肯定努力，心情輕鬆了一些。';
+ const base={...assessment,comfort:'這份努力被看見，讓忙碌的一天多了一些溫暖。',suggestions:[],blessing:'',events:[]};
+ const event={sentence_ids:[1],emotion:'Other',feeling:'輕鬆了一些',category:'buffer',topic:'同事肯定',explanation:'同事肯定努力，使沉重心情緩和。',outcome:'improved'};
+ assert.equal(parseDailyAnalysis({...base,events:[event]},raw).sources.causes[0].type,'buffer');
+ for(const bad of [{...event,sentence_ids:[99]}, {...event,explanation:'我被同事肯定後放鬆。'}, {...event,outcome:'not_improved'}])assert.equal(parseDailyAnalysis({...base,events:[bad]},raw).sources.causes.length,0);
+});
+test('login session survives app restarts until explicit logout without storing a password',async()=>{
+ const {persistSession,restoreSession,clearSession,AUTH_SESSION_KEY}=load('authSession');const values=new Map();
+ const storage={getItemAsync:async key=>values.get(key)||null,setItemAsync:async(k,v)=>values.set(k,v),deleteItemAsync:async key=>values.delete(key)};
+ const session={token:'synthetic-session-token',username:'Sabrina',avatar:'boy'};
+ await persistSession(storage,session);assert.deepEqual(await restoreSession(storage),session);
+ assert.equal(values.get(AUTH_SESSION_KEY).includes('password'),false);
+ await clearSession(storage);assert.equal(await restoreSession(storage),null);
+ values.set(AUTH_SESSION_KEY,'broken-json');assert.equal(await restoreSession(storage),null);
+});
+
+test('one-pass analysis still requires Chinese evidence for the translated primary emotion without another model call',async()=>{
+ const raw='有人插隊，我很生氣。';const output={...assessment,comfort:'遭遇插隊的不公平感與不滿可以被理解。',suggestions:[],blessing:'',events:[{sentence_ids:[1],emotion:'Anger',feeling:'很生氣',category:'stressor',topic:'排隊被插隊',explanation:'遭人插隊，引起不公平感與憤怒。',outcome:'unclear'}]};
+ for(const primary of ['Anger','Joy']){
+  const distribution=Object.fromEntries(['Joy','Sadness','Anger','Fear','Anticipation','Surprise','Disgust','Trust'].map(e=>[e,e===primary?100:0]));
+  const h=setup({classification:{scores:distribution,analysis:{...analysis,probabilities:Object.fromEntries(Object.keys(distribution).map(e=>[e,e===primary?1:0])),top_3:[{emotion:primary,probability:1,score:100}]},classification_translation:{version:'zh-en-faithful-v1'}}});
+  let count=0;h.slm.analyzeDaily=async()=>{count++;return run(output);};
+  const result=await runLocalFeedback(raw,h.classify,h.slm);
+  assert.equal(count,1);assert.equal(result.status,primary==='Anger'?'completed':'unavailable');
+  assert.deepEqual(result.scores,distribution);
+ }
+});
+
+test('single-pass original evidence includes a dependent outcome and rejects role-inverted event wording',()=>{
+ const {parseDailyAnalysis}=load('qwen/dailyAnalysis');
+ const raw='朋友擔心我遲到。下班同事肯定努力。其實有點意外。突然有人注意到努力，被理解後心情輕鬆了一些。';
+ const v={risk_level:'none',risk_evidence:[],summary:'朋友遲到打亂安排。同事給予肯定。',change:'同事肯定後放鬆。',comfort:'朋友遲到讓人不安，同事的肯定帶來理解與支持。',events:[{sentence_ids:[2,3],emotion:'Trust',category:'buffer',topic:'同事肯定',explanation:'同事肯定努力，使原本沉重的心情緩和。',outcome:'improved'}]};
+ const result=parseDailyAnalysis(v,raw);
+ assert.equal(result.assessment.context.event_context.includes('朋友遲到'),false);
+ assert.equal(result.support.comfort.includes('朋友遲到'),false);
+ assert.equal(result.sources.causes[0].type,'buffer');
+ assert.ok(result.sources.causes[0].evidence.endsWith('心情輕鬆了一些。'));
+});

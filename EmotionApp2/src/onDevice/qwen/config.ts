@@ -43,7 +43,7 @@ export function selectPhoneModel(totalMemory: number | null): PhoneModel {
 }
 
 export const SETTINGS = Object.freeze({
-  n_ctx: 2048,
+  n_ctx: 6144,
   n_batch: 128,
   n_ubatch: 128,
   n_parallel: 1,

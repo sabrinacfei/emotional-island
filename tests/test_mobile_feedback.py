@@ -186,3 +186,12 @@ class RelaxationBindingTests(unittest.TestCase):
         for kind in ['stressor','joy']:
             with self.assertRaises(ValueError):
                 SourceDetails(causes=[{**cause,'type':kind}])
+
+
+def test_single_pass_source_version_preserves_event_wording():
+    from mobile_feedback import SourceDetails
+    raw='今天有人插隊，我很生氣。'
+    data=SourceDetails(causes=[dict(type='stressor',topic='遭人插隊',explanation='遭人插隊破壞秩序，引起不公平感與憤怒。',evidence=raw,emotions=['Anger'])],emotion_sources=[dict(emotion='Anger',explanation='遭人插隊引起憤怒。',evidence=raw)],source_analysis_version='emotion-evidence-v5')
+    data.verify_evidence(raw)
+    assert data.causes[0].explanation.startswith('遭人插隊')
+    assert data.source_analysis_version=='emotion-evidence-v5'

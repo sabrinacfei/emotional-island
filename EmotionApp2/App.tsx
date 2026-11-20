@@ -15,6 +15,8 @@ import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
+import {restoreSession,persistSession,clearSession} from './src/onDevice/authSession';
 import { CLOUD_API_URL, syncPhoneFeedback, saveFragmentOriginal, getMobile, post } from './src/onDevice/cloudClient';
 import { classifyOnPhone } from './src/onDevice/services';
 import { runLocalFeedback, runImmediateSupport, type LocalFeedback } from './src/onDevice/localFeedback';
@@ -316,7 +318,15 @@ function aggregateImpact(records: TreeRecord[]) {
 
 function TagReasonSection({ raw }: { raw?: any }) {
   const groups = getTagGroups(raw);
-  const renderGroup = (title: string, list: any[], bg: string, color: string) => {
+  const eventDescription=(tag:any,type:string)=>{
+    if(raw?.source_analysis_version==='emotion-evidence-v5')return tag.r;
+    const cause=(raw?.causes || []).find((item:any)=>item.type===type && item.topic===tag.t);
+    const feelings=(cause?.emotions || []).map((key:string)=>EC[key]?.l).filter(Boolean);
+    const event=TL[tag.t] || tag.t;
+    return type==='buffer' ? `${event}，使原有情緒有所緩和。`
+      : feelings.length ? `${event}，伴隨${feelings.join('、')}等感受。` : event;
+  };
+  const renderGroup = (title: string, list: any[], bg: string, color: string, type:string) => {
     return (
       <View style={{ marginTop: 10 }}>
         <Text style={s.sectionLabel}>{title}</Text>
@@ -325,7 +335,7 @@ function TagReasonSection({ raw }: { raw?: any }) {
             <View style={[s.pill, { backgroundColor: bg }]}>
               <Text style={[s.mini, { color }]}>{TL[t.t] || t.t}</Text>
             </View>
-            <Text style={[s.body, { flex: 1 }]}>{t.r}</Text>
+            <Text style={[s.body, { flex: 1 }]}>{eventDescription(t,type)}</Text>
           </View>
         )) : <Text style={[s.mini, { color: C.muted }]}>
           {raw?.classification_available === false ? '這次沒有可顯示的情緒分析。' : '日記中沒有足夠線索辨識此類來源。'}
@@ -336,9 +346,9 @@ function TagReasonSection({ raw }: { raw?: any }) {
 
   return (
     <View>
-      {renderGroup('壓力來源', groups.st, '#D85A3022', '#D85A30')}
-      {renderGroup('情緒緩衝', groups.bt, '#1D9E7522', '#1D9E75')}
-      {renderGroup('快樂來源', groups.jt, '#7F77DD22', '#7F77DD')}
+      {renderGroup('壓力來源', groups.st, '#D85A3022', '#D85A30', 'stressor')}
+      {renderGroup('情緒緩衝', groups.bt, '#1D9E7522', '#1D9E75', 'buffer')}
+      {renderGroup('快樂來源', groups.jt, '#7F77DD22', '#7F77DD', 'joy')}
     </View>
   );
 }
@@ -1850,7 +1860,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
   const top = getTopEmotions(scores, 3, rec?.raw);
   const dailyContent = rec?.raw?.final_content || rec?.raw?.daily_content || rec?.raw?.dailyContent;
   const canRefreshSources = rec?.raw?.processing_mode === 'phone_slm_v1' && rec.raw.classification_available === true
-    && rec.raw.risk_level !== 'high' && dailyContent && rec.raw.source_analysis_version !== 'emotion-evidence-v4';
+    && rec.raw.risk_level !== 'high' && dailyContent && !['emotion-evidence-v4','emotion-evidence-v5'].includes(rec.raw.source_analysis_version);
 
   const refreshSources = async () => {
     if (!rec || !canRefreshSources || refreshingSources) return;
@@ -1894,6 +1904,7 @@ function DayAnalysisScreen({ navigation, route }: any) {
         <View style={s.resultCard}>
           <Text style={[s.label, { marginBottom: 16 }]}>情緒分析</Text>
           <EmotionBarChart scores={scores} raw={rec?.raw} />
+          {!!rec?.raw?.analysis_notes && <Text style={[s.body,{marginTop:16}]}>{rec.raw.analysis_notes}</Text>}
         </View>
 
         <View style={s.resultCard}>
@@ -2146,7 +2157,7 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
       await savePhoneDiary(entry);
       const feedback = entry.result && (entry.result.status === 'local_safety'
         || (entry.result.status === 'completed' && entry.result.classification_translation?.version === 'zh-en-faithful-v1'
-          && entry.result.source_analysis_version === 'emotion-evidence-v4'))
+          && ['emotion-evidence-v4','emotion-evidence-v5'].includes(entry.result.source_analysis_version || '')))
         ? entry.result : await runLocalFeedback(entry.content, async text => {
           const previous=entry.result;
           if(previous?.status==='unavailable' && ['causes','causes_validation'].includes(previous.failure_stage || '')
@@ -3066,6 +3077,7 @@ function AppContent() {
     NotoSerifTC_700Bold,
   });
 
+  const [sessionReady,setSessionReady]=useState(false);
   const [token, setToken] = useState('');
   const [username, setUsernameState] = useState('');
   const [avatar, setAvatarState] = useState('boy');
@@ -3073,21 +3085,41 @@ function AppContent() {
   const [afterModelSetup, setAfterModelSetup] = useState<'onboarding' | 'main'>('main');
   const [entry, setEntry] = useState<'welcome' | 'auth' | 'modelSetup' | 'onboarding' | 'main'>('welcome');
 
+  useEffect(()=>{
+    let mounted=true;
+    void restoreSession(SecureStore).then(saved=>{
+      if(!mounted||!saved)return;
+      setToken(saved.token);setUsernameState(saved.username);setAvatarState(saved.avatar);
+      setAfterModelSetup('main');setEntry('modelSetup');
+    }).catch(()=>undefined).finally(()=>{if(mounted)setSessionReady(true);});
+    return ()=>{mounted=false;};
+  },[]);
+  useEffect(()=>{
+    if(sessionReady&&token&&username)void persistSession(SecureStore,{token,username,avatar}).catch(()=>console.warn('登入保存尚未完成'));
+  },[sessionReady,token,username,avatar]);
+
   useEffect(() => {
-    const loadAvatar = async () => {
-      if (!username) { setAvatarState('boy'); return; }
-      const savedKey = await AsyncStorage.getItem(`userAvatar:${username}`);
+    let active=true;
+    const loadAvatar=async()=>{
+      if(!username){setAvatarState('boy');return;}
+      const savedKey=await AsyncStorage.getItem(`userAvatar:${username}`);
+      if(!active)return;
       setAvatarState(savedKey || 'boy');
-      if (token) {
-        try {
-          const res = await fetch(`${BASE_URL}/me`, { headers: { Authorization: `Bearer ${token}` } });
-          const data = await res.json();
-          if (data?.avatar) setAvatarState(data.avatar);
-        } catch {}
-      }
+      if(!token)return;
+      try{
+        const res=await fetch(`${BASE_URL}/me`,{headers:{Authorization:`Bearer ${token}`}});
+        if(!active)return;
+        if(res.status===401){
+          await clearSession(SecureStore);if(!active)return;
+          setToken('');setUsernameState('');setEntry('auth');setAuthMode('login');return;
+        }
+        if(!res.ok)return;
+        const data=await res.json();if(active&&data?.avatar)setAvatarState(data.avatar);
+      }catch{}
     };
-    loadAvatar();
-  }, [username, token]);
+    void loadAvatar();
+    return ()=>{active=false;};
+  },[username,token]);
 
   useEffect(() => {
     if (token) registerForPushNotifications(token);
@@ -3105,6 +3137,7 @@ function AppContent() {
   };
 
   const logout = () => {
+    void clearSession(SecureStore).catch(()=>console.warn('登出保存尚未完成'));
     setToken('');
     setUsernameState('');
     setAvatarState('boy');
@@ -3125,7 +3158,7 @@ function AppContent() {
     setEntry('modelSetup');
   };
 
-  if (!fontsLoaded) {
+  if (!fontsLoaded || !sessionReady) {
     return <View style={[s.center, { backgroundColor: C.bg }]}><ActivityIndicator color={C.accent} /></View>;
   }
 

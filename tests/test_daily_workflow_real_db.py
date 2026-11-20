@@ -108,7 +108,7 @@ class WorkflowIntegration(unittest.TestCase):
   self.assertEqual(updated['stressor_tags'],history[0]['stressor_tags'])
   self.assertEqual(updated['final_content'],history[0]['final_content'])
   self.assertEqual(updated['scores'],history[0]['scores'])
-  for version in ['emotion-evidence-v3','emotion-evidence-v4']:
+  for version in ['emotion-evidence-v3','emotion-evidence-v4','emotion-evidence-v5']:
    cleared=self.post(refresh,dict(content=RAW,causes=[],emotion_sources=[source],source_analysis_version=version)).json()
    self.assertEqual(cleared['stressor_tags'],[])
    self.assertEqual(cleared['scores'],history[0]['scores'])

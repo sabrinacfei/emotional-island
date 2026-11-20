@@ -5,10 +5,10 @@ import { PHONE_MODEL, verifyModel } from './storage';
 import { assertPromptFits, selectDisplayContent } from './policy';
 import type { PhoneSLM, SLMRun } from '../localFeedback';
 import { parseAssessment } from '../localFeedback';
-import { decision, EMOTIONS } from '../flow';
+import { decision, ruleRisk, EMOTIONS } from '../flow';
 import { composeDaily, DAILY_COMPOSE_SYSTEM, type DailySource } from '../dailyComposition';
 import { beginModelTask } from '../modelExecution';
-import { generateGroundedSources, GROUNDING_REVIEW_SYSTEM, sourceOutputBudget } from './sourceAnalysis';
+import {DAILY_ANALYSIS_SYSTEM,dailyAnalysisInput,dailyAnalysisSchema,parseDailyAnalysis} from './dailyAnalysis';
 import { TranslationService } from '../TranslationService';
 
 let context: LlamaContext | null = null;
@@ -191,7 +191,8 @@ async function assessAll(input: Parameters<PhoneSLM['assess']>[0]): Promise<SLMR
 export const translationService = new TranslationService((system, payload, schema) => json(system, payload, schema, 0.1), error => error instanceof PromptBudgetError);
 
 export async function generateDailySources(diary: string, displayScores?: Record<string, number>) {
-  return generateGroundedSources(diary, (system, payload, schema) => json(system, payload, schema, 0.1, sourceOutputBudget(schema)), error => error instanceof PromptBudgetError, EMOTIONS, displayScores);
+  const result=await phoneSLM.analyzeDaily!({diary,emotion_scores:displayScores as any,safety:decision(ruleRisk(diary))});
+  return parseDailyAnalysis(result.output,diary).sources;
 }
 
 export async function composePhoneDaily(sources: DailySource[]): Promise<string> {
@@ -201,6 +202,7 @@ export async function composePhoneDaily(sources: DailySource[]): Promise<string>
 }
 
 export const phoneSLM: PhoneSLM = {
+  analyzeDaily: input => json(DAILY_ANALYSIS_SYSTEM,dailyAnalysisInput(input.diary,input.emotion_scores),dailyAnalysisSchema(input.diary),0.1,2048),
   causes: async input => ({ output: await generateDailySources(input.diary, input.emotion_scores) }),
   assess: assessAll,
   respond: async input => {
