@@ -66,7 +66,8 @@ class NativeGeneration(BaseModel):
     runtime: Literal["llama.rn@0.13.0-rc.9"]
     model: str
     sha256: str
-    tokens_predicted: int = Field(ge=1, le=2048)
+    thinking_enabled: bool | None = None
+    tokens_predicted: int = Field(ge=1, le=4096)
     duration_ms: float = Field(gt=0)
     tokens_per_second: float | None
     stopped_eos: bool

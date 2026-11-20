@@ -638,3 +638,22 @@ test('single-pass diary retains distinct workload, friendship joy and later actu
  assert.ok(r.sources.causes.some(c=>c.type==='buffer'&&c.evidence.includes('輕鬆了一些')));
  assert.ok(r.sources.causes.every(c=>raw.includes(c.evidence)));
 });
+
+
+test('phone thinking mode reserves separate reasoning capacity and displays only final content',()=>{
+ const {SETTINGS}=load('qwen/config');
+ assert.equal(SETTINGS.enable_thinking,true);
+ assert.ok(SETTINGS.thinking_budget_tokens>0);
+ assert.ok(2048+SETTINGS.thinking_budget_tokens+2000+16<=SETTINGS.n_ctx);
+ const selected=selectDisplayContent({content:'{"comfort":"同事的肯定讓心情輕鬆一些。"}',reasoning_content:'hidden reasoning',text:'<think>hidden reasoning</think>'},{thinkingForcedOpen:true});
+ assert.deepEqual(JSON.parse(selected.content),{comfort:'同事的肯定讓心情輕鬆一些。'});
+ assert.throws(()=>selectDisplayContent({reasoning_content:'hidden reasoning',text:'<think>hidden reasoning</think>'},{thinkingForcedOpen:true}));
+});
+
+test('thinking mode displays only the parsed final answer and rejects a reasoning-only completion',()=>{
+ const final='{"comfort":"工作堆疊帶來疲憊，同事的肯定讓心情緩和。"}';
+ const result=selectDisplayContent({content:final,text:'<think>hidden</think>'+final,reasoning_content:'hidden'}, {thinkingForcedOpen:true});
+ assert.equal(result.content,final);
+ assert.equal(result.content.includes('hidden'),false);
+ assert.throws(()=>selectDisplayContent({content:'',text:'',reasoning_content:'unfinished'}, {thinkingForcedOpen:true}));
+});

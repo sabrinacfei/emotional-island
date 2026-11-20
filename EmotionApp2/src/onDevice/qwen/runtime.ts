@@ -50,15 +50,16 @@ async function json(system: string, payload: unknown, schema: object, temperatur
     if (cancelled || AppState.currentState !== 'active') throw new Error('App 已離開前景。');
     await ctx.clearCache(true);
     const messages: RNLlamaOAICompatibleMessage[] = [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(payload) }];
-    const template = { jinja: true, enable_thinking: false, chat_template_kwargs: { enable_thinking: false }, reasoning_format: 'none' as const,
+    const template = { jinja: true, enable_thinking: SETTINGS.enable_thinking, chat_template_kwargs: { enable_thinking: SETTINGS.enable_thinking }, reasoning_format: 'deepseek' as const,
       response_format: { type: 'json_schema' as const, json_schema: { strict: true, schema } } };
     const formatted = await ctx.getFormattedChat(messages, undefined, template);
     if (formatted.type !== 'jinja') throw new Error('本機模型未使用已驗證的 Jinja 模板。');
     const tokens = await ctx.tokenize(formatted.prompt);
-    try { assertPromptFits(tokens.tokens.length, SETTINGS.n_ctx, maxOutput); }
+    try { assertPromptFits(tokens.tokens.length, SETTINGS.n_ctx, maxOutput + SETTINGS.thinking_budget_tokens); }
     catch { throw new PromptBudgetError('完整語境超出單次上下文，需分段處理。'); }
     const started = performance.now();
-    const result = await ctx.completion({ messages, ...template, n_predict: maxOutput,
+    const result = await ctx.completion({ messages, ...template, n_predict: maxOutput + SETTINGS.thinking_budget_tokens,
+      thinking_budget_tokens: SETTINGS.thinking_budget_tokens,
       temperature, top_p: SETTINGS.top_p, top_k: SETTINGS.top_k, seed: SETTINGS.seed });
     if (__DEV__) {
       console.log('[Qwen Diagnostics]', {
@@ -132,7 +133,7 @@ async function json(system: string, payload: unknown, schema: object, temperatur
     const selected = selectDisplayContent(result, { thinkingForcedOpen: 'thinking_forced_open' in formatted && formatted.thinking_forced_open === true });
     return { output: JSON.parse(selected.content), trace: { execution: 'on-device', runtime: RUNTIME_VERSION, model: PHONE_MODEL.id, sha256: PHONE_MODEL.sha256,
       tokens_predicted: result.tokens_predicted, duration_ms: performance.now() - started, tokens_per_second: result.timings?.predicted_per_second ?? null,
-      stopped_eos: result.stopped_eos, raw_text: result.text } };
+      stopped_eos: result.stopped_eos, thinking_enabled: SETTINGS.enable_thinking, raw_text: selected.content } };
   } finally { busy = false; endTask(); }
 }
 
@@ -197,7 +198,9 @@ export const translationService = new TranslationService((system,payload,schema)
 
 export async function generateDailySources(diary: string, displayScores?: Record<string, number>) {
   const result=await phoneSLM.analyzeDaily!({diary,emotion_scores:displayScores as any,safety:decision(ruleRisk(diary))});
-  return parseDailyAnalysis(result.output,diary).sources;
+  const details=parseDailyAnalysis(result.output,diary).sources;
+  await AsyncStorage.setItem('lastDailySourceAnalysis',JSON.stringify({diary,output:result.output,generation:result.trace,sources:details}));
+  return details;
 }
 
 export async function composePhoneDaily(sources: DailySource[]): Promise<string> {

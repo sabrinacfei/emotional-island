@@ -63,6 +63,16 @@ class MobileApiTests(unittest.TestCase):
                 "receipt_token": data["receipt_token"], "support": {"status": "completed", "comfort": "這份委屈可以慢慢說。",
                 "suggestions": [], "blessing": "", "risk_level": "none", "response_mode": "SUPPORT_MODE", "safety_action": "none", "context": CONTEXT, "generation": TRACE}}
 
+    def test_thinking_trace_accepts_total_tokens_without_exposing_reasoning(self):
+        payload = self.payload()
+        payload["support"]["generation"] = {**TRACE, "thinking_enabled": True, "tokens_predicted": 3000}
+        response = self.client.post("/mobile/diaries", json=payload)
+        self.assertEqual(response.status_code, 200)
+        saved = self.save.await_args.args[2]
+        self.assertEqual(saved["generation"]["raw_text"], TRACE["raw_text"])
+        payload["support"]["generation"]["tokens_predicted"] = 4097
+        self.assertEqual(self.client.post("/mobile/diaries", json=payload).status_code, 422)
+
     def test_classification_only_returns_real_provider_scores_and_signed_receipt(self):
         response = self.prepare()
         self.assertEqual(response.status_code, 200)

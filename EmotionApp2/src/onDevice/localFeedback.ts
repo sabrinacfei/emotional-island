@@ -17,7 +17,7 @@ export type EmotionSource = { emotion: string; explanation: string; evidence: st
   coping_note?: string; additional_evidence?: string[] };
 export type DailySources = { causes: EmotionCause[]; emotion_sources?: EmotionSource[]; source_analysis_version?: 'emotion-evidence-v2' | 'emotion-evidence-v3' | 'emotion-evidence-v4' | 'emotion-evidence-v5' };
 export type GenerationTrace = { execution: 'on-device'; runtime: string; model: PhoneModelId; sha256: string;
-  tokens_predicted: number; duration_ms: number; tokens_per_second: number | null; stopped_eos: boolean; raw_text: string };
+  thinking_enabled?: boolean; tokens_predicted: number; duration_ms: number; tokens_per_second: number | null; stopped_eos: boolean; raw_text: string };
 export type SLMRun = { output: unknown; trace: GenerationTrace };
 export type LocalFeedback = Support & Decision & {
   status: 'completed' | 'local_safety' | 'unavailable';

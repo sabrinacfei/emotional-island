@@ -57,7 +57,8 @@ export const SETTINGS = Object.freeze({
   top_p: 0.8,
   top_k: 20,
   seed: 42,
-  enable_thinking: false,
+  enable_thinking: true,
+  thinking_budget_tokens: 1536,
 });
 
 export const RUNTIME_VERSION = 'llama.rn@0.13.0-rc.9';
