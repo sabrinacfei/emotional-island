@@ -742,3 +742,23 @@ test('only an old primary-evidence rejection can recover without invoking a mode
  assert.equal(await recoverPrimaryEvidenceFailure(raw,{...previous,failure_reason:'Unverifiable cause'}),null);
  assert.equal(await recoverPrimaryEvidenceFailure(raw,{...previous,status:'completed'}),null);
 });
+
+test('a complete schema JSON answer is recovered from native text mislabeled as reasoning',()=>{
+ const {selectStructuredContent}=load('qwen/policy');
+ const schema={type:'object',additionalProperties:false,required:['english'],properties:{english:{type:'string'}}};
+ const text='<|im_start|>assistant\n\n{"english":"I am looking forward to the workshop."}';
+ const result=selectStructuredContent({content:'',text,reasoning_content:text},schema,{thinkingForcedOpen:true});
+ assert.deepEqual(JSON.parse(result.content),{english:'I am looking forward to the workshop.'});
+ assert.equal(result.structuredFallback,true);assert.equal(result.source,'text');
+ for(const invalid of [
+   {content:'',text:'Let me think. '+text,reasoning_content:text},
+   {content:'',text:'{"diary":"wrong schema"}',reasoning_content:text},
+   {content:'',text:'{"english":"ok","extra":true}',reasoning_content:text},
+   {content:'',text:'{"english":"incomplete"',reasoning_content:text},
+   {content:'',text:'',reasoning_content:'{"english":"reasoning alone"}'},
+   {content:'',text,interrupted:true}, {content:'',text,context_full:true},
+   {content:'',text,tool_calls:[{}]},
+ ])assert.throws(()=>selectStructuredContent(invalid,schema,{thinkingForcedOpen:true}));
+ // Ordinary text display retains its original conservative reasoning guard.
+ assert.throws(()=>selectDisplayContent({content:'',text,reasoning_content:text},{thinkingForcedOpen:true}));
+});

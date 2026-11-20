@@ -54,3 +54,26 @@ export function selectDisplayContent(result: DisplayResult, options: { thinkingF
 export function finalContent(result: DisplayResult): string {
   return selectDisplayContent(result).content;
 }
+
+/** Some native reasoning parsers put a complete schema answer in text while
+ * leaving content empty. Recover only a whole JSON object matching this request;
+ * never mine JSON out of reasoning prose or show the reasoning_content field. */
+export function selectStructuredContent(result: DisplayResult, schema: object, options: { thinkingForcedOpen?: boolean } = {}): { content: string; source: 'content' | 'text'; cleaned: boolean; structuredFallback?: boolean } {
+  try { return selectDisplayContent(result, options); } catch (originalError) {
+    if (result.interrupted || result.context_full || result.truncated || result.tool_calls?.length
+        || result.content?.trim() || typeof result.text !== 'string') throw originalError;
+    const raw = result.text.trim();
+    const prefix = '<|im_start|>assistant\n';
+    const text = (raw.startsWith(prefix) ? raw.slice(prefix.length) : raw)
+      .replace(/(?:\s*<\|(?:im_end|endoftext)\|>\s*)+$/, '').trim();
+    if (!text.startsWith('{') || !text.endsWith('}') || /<\/?think>|<\|[^>]*\|>/.test(text)) throw originalError;
+    let value: unknown;
+    try { value = JSON.parse(text); } catch { throw originalError; }
+    const shape = schema as { type?: string; properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean };
+    if (shape.type !== 'object' || !shape.properties || !Array.isArray(shape.required)
+        || !value || typeof value !== 'object' || Array.isArray(value)
+        || shape.required.some(key => !Object.hasOwn(value as object, key))
+        || (shape.additionalProperties === false && Object.keys(value).some(key => !Object.hasOwn(shape.properties!, key)))) throw originalError;
+    return { content: text, source: 'text', cleaned: text !== raw, structuredFallback: true };
+  }
+}

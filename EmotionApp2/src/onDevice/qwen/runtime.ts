@@ -3,7 +3,7 @@ import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SETTINGS, RUNTIME_VERSION } from './config';
 import { PHONE_MODEL, verifyModel } from './storage';
-import { assertPromptFits, selectDisplayContent } from './policy';
+import { assertPromptFits, selectStructuredContent } from './policy';
 import type { PhoneSLM, SLMRun } from '../localFeedback';
 import { parseAssessment } from '../localFeedback';
 import { decision, ruleRisk, EMOTIONS } from '../flow';
@@ -64,7 +64,9 @@ async function json(system: string, payload: unknown, schema: object, temperatur
       temperature, top_p: SETTINGS.top_p, top_k: SETTINGS.top_k, seed: SETTINGS.seed });
     await AsyncStorage.setItem('lastQwenCompletion', JSON.stringify({
       captured_at: new Date().toISOString(), thinking_enabled: enableThinking,
+      model: PHONE_MODEL.id, model_sha256: PHONE_MODEL.sha256, request_input: payload,
       schema_fields: Object.keys((schema as any).properties || {}), prompt_tokens: tokens.tokens.length,
+      template: { chat_format: (formatted as any).chat_format, generation_prompt: (formatted as any).generation_prompt, thinking_start_tag: (formatted as any).thinking_start_tag, thinking_end_tag: (formatted as any).thinking_end_tag, grammar_lazy: (formatted as any).grammar_lazy },
       thinking_forced_open: 'thinking_forced_open' in formatted && formatted.thinking_forced_open === true,
       content: result.content, text: result.text, reasoning_content: result.reasoning_content,
       tokens_predicted: result.tokens_predicted, stopped_eos: result.stopped_eos,
@@ -139,7 +141,7 @@ async function json(system: string, payload: unknown, schema: object, temperatur
     }
     if (cancelled) throw new Error('本機輸出中止。');
     if (result.stopped_limit) throw new PromptBudgetError('完整輸出超過長度上限，需分段處理。');
-    const selected = selectDisplayContent(result, { thinkingForcedOpen: 'thinking_forced_open' in formatted && formatted.thinking_forced_open === true });
+    const selected = selectStructuredContent(result, schema, { thinkingForcedOpen: 'thinking_forced_open' in formatted && formatted.thinking_forced_open === true });
     return { output: JSON.parse(selected.content), trace: { execution: 'on-device', runtime: RUNTIME_VERSION, model: PHONE_MODEL.id, sha256: PHONE_MODEL.sha256,
       tokens_predicted: result.tokens_predicted, duration_ms: performance.now() - started, tokens_per_second: result.timings?.predicted_per_second ?? null,
       stopped_eos: result.stopped_eos, thinking_enabled: enableThinking, raw_text: selected.content } };
@@ -200,7 +202,7 @@ async function assessAll(input: Parameters<PhoneSLM['assess']>[0]): Promise<SLMR
 }
 
 const translationCacheKey=(diary:string)=>`classificationTranslation:one-pass-v1:${PHONE_MODEL.sha256}:${diary}`;
-export const translationService = new TranslationService((system,payload,schema)=>json(system,payload,schema,0.1,2048,false),error=>error instanceof PromptBudgetError,{
+export const translationService = new TranslationService((system,payload,schema)=>json(system,payload,schema,0.1,2048),error=>error instanceof PromptBudgetError,{
   get:async diary=>{const raw=await AsyncStorage.getItem(translationCacheKey(diary));return raw?JSON.parse(raw):null;},
   set:async(diary,result)=>{await AsyncStorage.setItem(translationCacheKey(diary),JSON.stringify(result));},
 });
@@ -214,12 +216,12 @@ export async function generateDailySources(diary: string, displayScores?: Record
 
 export async function composePhoneDaily(sources: DailySource[]): Promise<string> {
   return composeDaily(sources, async segments => (await json(DAILY_COMPOSE_SYSTEM, { chronological_fragments: segments },
-    { type: 'object', additionalProperties: false, required: ['diary'], properties: { diary: str } }, 0.1,2048,false)).output,
+    { type: 'object', additionalProperties: false, required: ['diary'], properties: { diary: str } }, 0.1,2048)).output,
     error => error instanceof PromptBudgetError);
 }
 
 export const phoneSLM: PhoneSLM = {
-  analyzeDaily: input => json(DAILY_ANALYSIS_SYSTEM,dailyAnalysisInput(input.diary,input.emotion_scores),dailyAnalysisSchema(input.diary),0.1,2048,false),
+  analyzeDaily: input => json(DAILY_ANALYSIS_SYSTEM,dailyAnalysisInput(input.diary,input.emotion_scores),dailyAnalysisSchema(input.diary),0.1,2048),
   causes: async input => ({ output: await generateDailySources(input.diary, input.emotion_scores) }),
   assess: assessAll,
   respond: async input => {
