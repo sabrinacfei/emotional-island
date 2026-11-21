@@ -656,7 +656,7 @@ function EmotionBarChart({ scores, raw }: BarChartProps) {
       </ScrollView>
 
       <Text style={s.chartHint}>點擊柱狀圖查看情緒來源</Text>
-      <Text style={[s.mini,{textAlign:'center',marginTop:8}]}>比例為模型估計；缺少原文依據的項目會標示未確認。</Text>
+      <Text style={[s.mini,{textAlign:'center',marginTop:8}]}>{reviewedDisplayScores(raw) ? '缺少原文依據的項目會標示未確認。' : '比例為模型估計；缺少原文依據的項目會標示未確認。'}</Text>
 
       <DismissibleModal visible={!!popup} onClose={() => setPopup(null)} overlayStyle={s.noticeOverlay}>
         {popup && <View onStartShouldSetResponder={() => true}
