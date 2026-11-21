@@ -205,10 +205,10 @@ test('long diary composition retains every original group without summarizing su
  assert.equal(result,'保留事件0 保留事件1');assert.equal(calls.length,3);
  assert.deepEqual(calls.slice(1).flatMap(c=>c.map(s=>s.content)),sources.map(s=>s.content));
 });
-test('six daily fragments are composed in ordered groups without a final event-dropping rewrite',async()=>{
+test('six short daily fragments are composed in one call with every event retained',async()=>{
  const sources=Array.from({length:6},(_,i)=>({id:String(i),timestamp:String(i),content:'事件'+i}));const seen=[];
  const result=await composeDaily(sources,async segments=>{seen.push(segments);return{diary:segments.map(s=>s.content).join('，')+'。'}},()=>false);
- assert.equal(seen.length,3);assert.deepEqual(seen.flat().map(s=>s.content),sources.map(s=>s.content));
+ assert.equal(seen.length,1);assert.deepEqual(seen.flat().map(s=>s.content),sources.map(s=>s.content));
  for(const source of sources)assert.ok(result.includes(source.content));
 });
 test('composition errors preserve originals and never masquerade as a completed daily draft', async () => {
@@ -761,4 +761,16 @@ test('a complete schema JSON answer is recovered from native text mislabeled as 
  ])assert.throws(()=>selectStructuredContent(invalid,schema,{thinkingForcedOpen:true}));
  // Ordinary text display retains its original conservative reasoning guard.
  assert.throws(()=>selectDisplayContent({content:'',text,reasoning_content:text},{thinkingForcedOpen:true}));
+});
+
+test('a six-fragment day splits only on a measured capacity error and retains every source',async()=>{
+ const sources=Array.from({length:6},(_,i)=>({id:String(i),timestamp:String(i),content:'事件'+i}));const attempts=[];
+ const result=await composeDaily(sources,async segments=>{
+  attempts.push(segments.map(s=>s.content));
+  if(segments.length>3)throw new RangeError('measured capacity');
+  return{diary:segments.map(s=>s.content).join('，')+'。'};
+ },e=>e instanceof RangeError);
+ assert.equal(attempts.length,3);assert.equal(attempts[0].length,6);
+ assert.deepEqual(attempts.slice(1).flat(),sources.map(s=>s.content));
+ for(const source of sources)assert.ok(result.includes(source.content));
 });
