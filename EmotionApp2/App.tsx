@@ -21,7 +21,7 @@ import { CLOUD_API_URL, syncPhoneFeedback, saveFragmentOriginal, getMobile, post
 import { classifyOnPhone } from './src/onDevice/services';
 import { runLocalFeedback, recoverPrimaryEvidenceFailure, runImmediateSupport, type LocalFeedback } from './src/onDevice/localFeedback';
 import { trendPaths, type WeekDay, type WeekReview } from './src/onDevice/weekly';
-import { percentageScores, rankedEmotionScores } from './src/onDevice/emotionScores';
+import { percentageScores, rankedEmotionScores, reviewedDisplayScores } from './src/onDevice/emotionScores';
 import { completeDiaryExcerpts, emotionEvidence, isSourceExplanation } from './src/onDevice/emotionEvidence';
 import { FeedbackTouchable as TouchableOpacity, InteractionFeedbackProvider, selectionFeedback, useInteractionFeedback } from './src/ui/InteractionFeedback';
 import { Alert, DismissibleModal, NoticeProvider } from './src/ui/Overlay';
@@ -222,18 +222,19 @@ function calcScore(e: Record<string, number> = {}) {
 }
 
 function toTreeRecord(d: any): TreeRecord {
+  const display = reviewedDisplayScores(d);
   return {
     id: String(d.id || d._id || d.analyzed_at || Math.random()),
     date: d.date_label || d.analyzed_at?.slice(0, 10) || d.date || '',
-    mood: d.classification_available === false ? 'Unclassified' : (d.dominant_emotions?.[0] || d.dominantEmotion || 'Joy'),
+    mood: d.classification_available === false ? 'Unclassified' : (display ? rankedEmotionScores(display, {}, 1)[0]?.[0] : d.dominant_emotions?.[0] || d.dominantEmotion || 'Joy'),
     summary: d.daily_summary || d.summary || d.one_line_summary || d.analysis_notes || '',
-    scores: d.scores || d.average_scores || {},
+    scores: display || d.scores || d.average_scores || {},
     raw: d,
   };
 }
 
 function getTopEmotions(scores: Record<string, number> = {}, limit = 3, raw?: any) {
-  return rankedEmotionScores(scores, raw?.neural_prior?.probabilities || raw?.classifier_analysis?.probabilities || {}, limit);
+  return rankedEmotionScores(scores, reviewedDisplayScores(raw) ? {} : raw?.neural_prior?.probabilities || raw?.classifier_analysis?.probabilities || {}, limit);
 }
 
 // 對齊 HTML getEmoSource：根據 EMO_SRC 取對應 tag 的說明
@@ -2094,6 +2095,29 @@ function WheelSelector({ options, value, onChange, suffix = '' }: any) {
   );
 }
 
+function DiaryActionLabel({ label, busy }: { label: string; busy: boolean }) {
+  const { animations, reduceMotion } = useInteractionFeedback();
+  const dots = useRef([new Animated.Value(0.35), new Animated.Value(0.35), new Animated.Value(0.35)]).current;
+  const animate = busy && animations && !reduceMotion;
+  useEffect(() => {
+    if (!animate) { dots.forEach(dot => dot.setValue(1)); return; }
+    const waves = dots.map((dot, index) => Animated.loop(Animated.sequence([
+      Animated.delay(index * 180),
+      Animated.timing(dot, { toValue: 1, duration: 360, useNativeDriver: true }),
+      Animated.timing(dot, { toValue: 0.35, duration: 360, useNativeDriver: true }),
+      Animated.delay((2 - index) * 180),
+    ])));
+    waves.forEach(wave => wave.start());
+    return () => waves.forEach(wave => wave.stop());
+  }, [animate, dots]);
+  return <View pointerEvents="none" style={{flexDirection:'row',alignItems:'center',justifyContent:'center',paddingHorizontal:14,maxWidth:'100%'}}>
+    <Text testID={busy ? 'daily-progress' : undefined} accessibilityLiveRegion="polite" style={[s.primaryBtnText,{textAlign:'center',flexShrink:1,color:'#FFFFFF'},busy && {fontSize:14,lineHeight:20,letterSpacing:0}]}>{busy ? label.replace(/[.…]+$/u, '') : label}</Text>
+    {busy && <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{flexDirection:'row',alignItems:'center',gap:3,marginLeft:8}}>
+      {dots.map((dot,index) => <Animated.View key={index} style={{width:4,height:4,borderRadius:2,backgroundColor:'#FFFFFF',opacity:dot}} />)}
+    </View>}
+  </View>;
+}
+
 function DailyDiaryEditScreen({ navigation, route }: any) {
   const { token, username } = useContext(AuthContext);
   const date = route.params?.date;
@@ -2117,7 +2141,7 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
   const compose = async () => {
     if (processingRef.current) return;
     processingRef.current = true;
-    setLoading(true); setProgress('小島精靈正在整理...');
+    setLoading(true); setProgress('小島精靈正在整理…');
     try {
       const data = await refresh();
       const draft = await composePhoneDaily(data.sources);
@@ -2125,7 +2149,7 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
         content: draft, source_ids: data.sources.map((x: any) => x.id),
         ...(PHONE_MODEL.inferenceSource === 'phone-qwen3.5-2b' ? { draft_source: PHONE_MODEL.inferenceSource } : {}),
       });
-      await refresh(); setProgress('日記已整理，可確認內容後再按分析。');
+      await refresh(); setProgress('');
     } catch { setProgress('整理尚未完成，原始小日記仍保留，請稍後重試。'); }
     finally { processingRef.current = false; setLoading(false); }
   };
@@ -2133,7 +2157,7 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
     const analysisContent = typeof preparedContent === 'string' ? preparedContent : content;
     if (!analysisContent.trim() || processingRef.current) return;
     processingRef.current = true;
-    setLoading(true); setProgress('小島精靈正在思考...');
+    setLoading(true); setProgress('正在手機準備日記分析…');
     try {
       // This transition is persisted before any classifier request, including retries.
       const confirmed = await post(BASE_URL, `/mobile/daily/${date}/confirm`, token, { content: analysisContent });
@@ -2143,11 +2167,15 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
       const entry = pending.find(saved => saved.kind === 'daily' && saved.date === date && saved.content === confirmed.final_content)
         ?? newPhoneDiary(username, confirmed.final_content, 'daily', date);
       await savePhoneDiary(entry);
+      let classifierCheckpoint = entry.classifierCheckpoint;
       const recovered = await recoverPrimaryEvidenceFailure(entry.content, entry.result);
       const feedback = recovered ?? (entry.result && (entry.result.status === 'local_safety'
         || (entry.result.status === 'completed' && entry.result.classification_translation?.version === 'zh-en-faithful-v1'
           && ['emotion-evidence-v4','emotion-evidence-v5'].includes(entry.result.source_analysis_version || '')))
         ? entry.result : await runLocalFeedback(entry.content, async text => {
+          if (classifierCheckpoint?.classification_available && classifierCheckpoint.scores && classifierCheckpoint.analysis && classifierCheckpoint.classifier_trace
+            && classifierCheckpoint.classification_translation?.version === 'zh-en-faithful-v1'
+            && classifierCheckpoint.classification_translation.segments.map(part => part.source).join('') === text) return classifierCheckpoint;
           const previous=entry.result;
           if(previous?.status==='unavailable' && ['causes','causes_validation'].includes(previous.failure_stage || '')
             && previous.classifier_trace && previous.classifier_analysis && previous.scores
@@ -2157,14 +2185,17 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
               analysis:previous.classifier_analysis,classifier_trace:previous.classifier_trace,
               classification_translation:previous.classification_translation,risk_floor:previous.risk_level};
           }
-          return classifyOnPhone(text,setProgress);
+          const classified = await classifyOnPhone(text,setProgress);
+          classifierCheckpoint = classified;
+          await savePhoneDiary({ ...entry, classifierCheckpoint: classified });
+          return classified;
         }, phoneSLM, setProgress));
-      const saved: PhoneDiary = { ...entry, result: feedback, syncStatus: 'pending' };
+      const saved: PhoneDiary = { ...entry, classifierCheckpoint, result: feedback, syncStatus: 'pending' };
       await savePhoneDiary(saved);
       setLocalResult(feedback);
       if (feedback.status === 'unavailable') {
         const phases = { translation: '英文整理', classification: '情緒分類', assessment: '語境理解', assessment_validation: '語境檢查', support: '陪伴回饋', support_validation: '回饋檢查', causes: '情緒成因', causes_validation: '成因檢查' };
-        setProgress(`日記已定稿，${feedback.failure_stage ? phases[feedback.failure_stage] : '分析'}尚未完成。${feedback.failure_message || '已完成的內容會保留，可繼續分析。'}`);
+        setProgress(`${feedback.failure_stage ? phases[feedback.failure_stage] : '分析'}尚未完成。${feedback.failure_message || '已完成的內容會保留，可繼續分析。'}`);
         if (feedback.classification_available && feedback.scores) navigation.navigate('AIAnalysis', { result: feedback, analysisPending: true, date });
         return;
       }
@@ -2183,22 +2214,30 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
     finally { processingRef.current = false; setLoading(false); }
   };
   const finalized = ['finalized_pending_analysis', 'analyzed'].includes(daily?.workflow_status);
+  const actionProgress = progress || '正在手機分析事件、情緒變化與來源…';
+  const disabledActionStyle = { backgroundColor: '#9DAC98' };
+  // Keep the bird and island in the illustrated header above all diary content.
+  const journalHeaderGap = Math.max(96, Math.round(SH * 0.14));
+  const confirmLabel = daily?.workflow_status === 'analyzed' ? '分析已完成' : finalized ? '繼續分析日記' : '確認定稿並分析';
   return <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
     <ScreenBg source={require('./assets/journal.png')}><ScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 58, paddingBottom: 90 }}>
       <BackButton onPress={() => navigation.goBack()} />
       <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>{date} 日記</Text>
-      <Text style={[s.body, { marginTop: 24 }]}>{finalized ? '日記已定稿' : '先整理並確認內容，再進行情緒分析。'}</Text>
-      {daily?.confirmation_deadline && <Text style={s.mini}>確認截止：{new Date(daily.confirmation_deadline).toLocaleString('zh-TW')}</Text>}
-      {!!progress && <Text testID="daily-progress" accessibilityLiveRegion="polite" style={s.body}>{progress}</Text>}
+      <View style={{height:journalHeaderGap}} />
       {!daily && !sources.length && !progress && <Text style={s.body}>這一天還沒有小日記。</Text>}
       {localResult?.classification_available && localResult.scores && daily?.workflow_status !== 'analyzed' && <View testID="saved-classification-result" style={s.resultCard}>
         <Text style={s.label}>已完成的情緒分類</Text><EmotionBarChart scores={localResult.scores} />
       </View>}
-      {daily?.workflow_status === 'pending_aggregation' && <TouchableOpacity testID="daily-compose" style={s.primaryBtn} disabled={loading} onPress={compose}><Text style={s.primaryBtnText}>整理當天小日記</Text></TouchableOpacity>}
+      {daily?.workflow_status === 'pending_aggregation' && <TouchableOpacity testID="daily-compose" style={[s.primaryBtn, loading && disabledActionStyle]} disabled={loading} accessibilityState={{disabled: loading, busy: loading}} accessibilityLabel={loading ? actionProgress : '整理當天小日記'} onPress={compose}>
+        <DiaryActionLabel label={loading ? actionProgress : '整理當天小日記'} busy={loading} />
+      </TouchableOpacity>}
       {daily && daily.workflow_status !== 'pending_aggregation' && <>
         <View style={[s.diaryBox, { minHeight: 280 }]}><TextInput testID="daily-content" style={[s.diaryInput, { minHeight: 260 }]} value={content} onChangeText={setContent} editable={!finalized && !loading} multiline maxLength={12000} /></View>
-        <TouchableOpacity testID="daily-confirm" style={[s.primaryBtn, loading && { opacity: 0.65 }]} disabled={loading || !daily || daily.workflow_status === 'analyzed'} onPress={() => void save()}>{loading ? <ActivityIndicator color="white" /> : <Text style={s.primaryBtnText}>{daily.workflow_status === 'analyzed' ? '分析已完成' : finalized ? '繼續正式分析' : '確認定稿並分析'}</Text>}</TouchableOpacity>
+        <TouchableOpacity testID="daily-confirm" style={[s.primaryBtn, (loading || daily.workflow_status === 'analyzed') && disabledActionStyle]} disabled={loading || !daily || daily.workflow_status === 'analyzed'} accessibilityState={{disabled: loading || daily.workflow_status === 'analyzed', busy: loading}} accessibilityLabel={loading ? actionProgress : confirmLabel} onPress={() => void save()}>
+          <DiaryActionLabel label={loading ? actionProgress : confirmLabel} busy={loading} />
+        </TouchableOpacity>
       </>}
+      {!!progress && !loading && <Text testID="daily-progress" accessibilityLiveRegion="polite" style={[s.body, {marginTop:12}]}>{progress}</Text>}
       <Text style={[s.label, { marginTop: 24 }]}>原始小日記（{sources.length} 則）</Text>
       {sources.map(x => <View key={x.id} style={s.resultCard}><Text style={s.mini}>{new Date(x.timestamp).toLocaleTimeString('zh-TW')}</Text><Text style={s.body}>{x.content}</Text></View>)}
     </ScrollView></ScreenBg>

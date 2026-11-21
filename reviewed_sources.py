@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from pymongo import ReturnDocument
 from mobile_feedback import SourceDetails, EmotionSource, daily_source_fields
+from slm_schemas import Scores
 
 REVIEW_FIELDS = ('causes', 'emotion_sources', 'source_analysis_version', 'emotion_reasons', 'stressor_tags', 'buffer_tags', 'joy_tags', 'analysis_notes', 'one_line_summary', 'summary', 'source_review')
 
@@ -35,7 +36,11 @@ class ReviewedSources(SourceDetails):
     change: str = Field(min_length=1, max_length=1000)
     note: str = Field(min_length=1, max_length=500)
 
+    display_scores: Scores | None = None
+
     def verify_review(self):
+        if self.display_scores is not None and sum(self.display_scores.model_dump().values()) != 100:
+            raise HTTPException(422, "顯示比例需八類齊全且合計 100%。")
         self.verify_evidence(self.content)
         levels = {item.emotion: item for item in self.annotations}
         if len(levels) != 8:
@@ -106,7 +111,9 @@ def register_review_routes(api, db, current_user, serialize, workflow):
         fields.update(analysis_notes=data.change, one_line_summary=data.summary, summary=data.summary,
                       source_review={'origin': 'human-reviewed', 'review_id': data.review_id,
                                      'reviewed_at': now.isoformat(), 'reviewer_user_id': str(uid),
-                                     'note': data.note, 'annotations': annotations})
+                                     'note': data.note, 'annotations': annotations,
+                                     **({'display_scores': data.display_scores.model_dump(),
+                                         'display_scores_origin': 'owner-provided-estimate'} if data.display_scores is not None else {})})
         audit = {'userId': uid, 'date_label': day, 'review_id': data.review_id, 'created_at': now,
                  'before': {key: record.get(key) for key in REVIEW_FIELDS}, 'after': fields,
                  'model_generation_preserved': True, 'scores_preserved': True, 'status': 'prepared'}

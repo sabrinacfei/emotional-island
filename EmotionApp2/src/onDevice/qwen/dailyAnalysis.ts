@@ -45,7 +45,7 @@ function groundedWording(text:any,diary:string):any{
 export function parseDailyAnalysis(output:unknown,diary:string){
  const original=output as any;
  const concise=original?.format==='evidence-first-v1';
- const contextual=concise?{...original,summary:'依據日記原文整理的相關事件。',change:'本次提供事件與原文對應，未另生成情緒變化推論。',comfort:'這些感受值得被理解，也可以留些空間照顧自己。'}:original;
+ const contextual=concise?{...original,summary:'依據日記原文整理的相關事件。',change:'本次提供事件與原文對應，未另生成情緒變化推論。',comfort:'今天的日記事件與情緒來源已整理好。'}:original;
  const v={...contextual,summary:groundedWording(contextual?.summary,diary),change:groundedWording(contextual?.change,diary),comfort:groundedWording(contextual?.comfort,diary)};
  const assessment=parseAssessment({risk_level:v?.risk_level,risk_evidence:v?.risk_evidence,
   context:v?.context || {event_context:v?.summary,emotional_context:v?.change,main_concern:'未提及',coping_already_tried:'未提及',support_preference:'未提及'},support_style:v?.support_style || 'unspecified'},diary);

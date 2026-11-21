@@ -1,8 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { LocalFeedback } from './localFeedback';
+import type { LocalFeedback, PhoneClassifierReply } from './localFeedback';
 
 export type PhoneDiary = { id: string; owner: string; content: string; kind: 'fragment' | 'daily'; date?: string;
-  createdAt: string; result?: LocalFeedback; syncStatus: 'draft' | 'pending' | 'synced' };
+  createdAt: string; result?: LocalFeedback; classifierCheckpoint?: PhoneClassifierReply; syncStatus: 'draft' | 'pending' | 'synced' };
 const key = (owner: string, id: string) => `phoneDiary:v1:${encodeURIComponent(owner)}:${id}`;
 export function newPhoneDiary(owner: string, content: string, kind: PhoneDiary['kind'], date?: string): PhoneDiary {
   if (!owner || !content.trim()) throw new Error('Missing diary owner or content');

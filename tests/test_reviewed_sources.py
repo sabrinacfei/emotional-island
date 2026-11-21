@@ -35,6 +35,18 @@ class ReviewedSourceTests(unittest.TestCase):
         self.assertEqual(audit['before']['causes'],[]);self.assertEqual(audit['after']['causes'][0]['type'],'buffer')
         self.assertTrue(audit['model_generation_preserved'])
 
+    def test_explicit_display_estimate_preserves_actual_model_output(self):
+        body=payload(self.record)
+        values=dict(Surprise=16,Anger=13,Disgust=10,Fear=14,Anticipation=12,Joy=12,Sadness=10,Trust=13)
+        body['display_scores']=values
+        self.assertEqual(self.client.put('/mobile/daily/2026-11-24/source-review',json=body).status_code,200)
+        fields=self.db.emotion_analyses.find_one_and_update.await_args.args[1]['$set']
+        self.assertNotIn('scores',fields)
+        self.assertEqual(fields['source_review']['display_scores'],values)
+        self.assertEqual(fields['source_review']['display_scores_origin'],'owner-provided-estimate')
+        body['display_scores']['Joy']=11
+        self.assertEqual(self.client.put('/mobile/daily/2026-11-24/source-review',json=body).status_code,422)
+
     def test_stale_revision_cannot_overwrite_new_sources(self):
         body=payload(self.record);body['expected_revision']='0'*64
         self.assertEqual(self.client.put('/mobile/daily/2026-11-24/source-review',json=body).status_code,409)
@@ -69,3 +81,10 @@ class ReviewedSourceTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+class RouteRegistrationTests(unittest.TestCase):
+    def test_workflow_registers_review_routes_exactly_once(self):
+        from mobile_workflow_api import router
+        api=router(SimpleNamespace(),lambda:'owner',lambda x:x)
+        paths=[(r.path,tuple(sorted(r.methods)))for r in api.routes]
+        self.assertEqual(len(paths),len(set(paths)))

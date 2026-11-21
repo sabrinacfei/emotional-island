@@ -23,3 +23,15 @@ export function rankedEmotionScores(scores: Record<string, number> = {}, probabi
     .sort((a, b) => (probabilities[b[0]] ?? b[1]) - (probabilities[a[0]] ?? a[1]))
     .slice(0, limit);
 }
+
+/** Explicit owner-provided display values never replace saved model probabilities. */
+export function reviewedDisplayScores(raw: any): Record<string, number> | null {
+  const review = raw?.source_review;
+  const keys = ['Joy','Sadness','Anger','Fear','Anticipation','Surprise','Disgust','Trust'];
+  const scores = review?.display_scores;
+  if (review?.origin !== 'human-reviewed' || review?.display_scores_origin !== 'owner-provided-estimate'
+      || !scores || Object.keys(scores).length !== keys.length
+      || !keys.every(key => Number.isInteger(scores[key]) && scores[key] >= 0 && scores[key] <= 100)
+      || keys.reduce((sum, key) => sum + scores[key], 0) !== 100) return null;
+  return scores;
+}

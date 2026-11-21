@@ -774,3 +774,24 @@ test('a six-fragment day splits only on a measured capacity error and retains ev
  assert.deepEqual(attempts.slice(1).flat(),sources.map(s=>s.content));
  for(const source of sources)assert.ok(result.includes(source.content));
 });
+
+test('native cancellation accepts void and promises without an unhandled rejection', async () => {
+  const { stopNativeCompletion } = load('qwen/cancellation');
+  let calls=0;
+  await stopNativeCompletion({stopCompletion(){calls++;}});
+  await stopNativeCompletion({stopCompletion(){calls++;return Promise.resolve();}});
+  await stopNativeCompletion({stopCompletion(){calls++;return Promise.reject(new Error('already stopped'));}});
+  await stopNativeCompletion({stopCompletion(){calls++;throw new Error('released');}});
+  await stopNativeCompletion(null);
+  assert.equal(calls,4);
+});
+test('owner display distribution requires complete provenance and leaves model scores intact', () => {
+  const { reviewedDisplayScores, rankedEmotionScores } = load('emotionScores');
+  const values={Surprise:16,Anger:13,Disgust:10,Fear:14,Anticipation:12,Joy:12,Sadness:10,Trust:13};
+  const raw={scores:{Disgust:90,Joy:10},source_review:{origin:'human-reviewed',display_scores_origin:'owner-provided-estimate',display_scores:values}};
+  assert.deepEqual(reviewedDisplayScores(raw),values);
+  assert.equal(rankedEmotionScores(reviewedDisplayScores(raw),{},1)[0][0],'Surprise');
+  assert.deepEqual(raw.scores,{Disgust:90,Joy:10});
+  assert.equal(reviewedDisplayScores({...raw,source_review:{...raw.source_review,display_scores:{...values,Joy:11}}}),null);
+  assert.equal(reviewedDisplayScores({...raw,source_review:{display_scores:values}}),null);
+});
