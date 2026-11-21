@@ -2225,9 +2225,6 @@ function DailyDiaryEditScreen({ navigation, route }: any) {
       <Text style={[s.title, { textAlign: 'center', marginTop: -40 }]}>{date} 日記</Text>
       <View style={{height:journalHeaderGap}} />
       {!daily && !sources.length && !progress && <Text style={s.body}>這一天還沒有小日記。</Text>}
-      {localResult?.classification_available && localResult.scores && daily?.workflow_status !== 'analyzed' && <View testID="saved-classification-result" style={s.resultCard}>
-        <Text style={s.label}>已完成的情緒分類</Text><EmotionBarChart scores={localResult.scores} />
-      </View>}
       {daily?.workflow_status === 'pending_aggregation' && <TouchableOpacity testID="daily-compose" style={[s.primaryBtn, loading && disabledActionStyle]} disabled={loading} accessibilityState={{disabled: loading, busy: loading}} accessibilityLabel={loading ? actionProgress : '整理當天小日記'} onPress={compose}>
         <DiaryActionLabel label={loading ? actionProgress : '整理當天小日記'} busy={loading} />
       </TouchableOpacity>}
