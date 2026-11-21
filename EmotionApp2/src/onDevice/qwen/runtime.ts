@@ -20,7 +20,7 @@ let busy = false;
 let cancelled = false;
 class PromptBudgetError extends Error {}
 AppState.addEventListener('change', state => {
-  if (state !== 'active' && busy) { cancelled = true; void stopNativeCompletion(context); }
+  if (state === 'background' && busy) { cancelled = true; void stopNativeCompletion(context); }
 });
 
 async function load() {
